@@ -1,0 +1,816 @@
+# Current Runtime Contract
+
+`data/database.jsonl` is the canonical runtime source of truth. Normal startup
+loads only that file through `cache.load_database()` and constructs
+`RuntimeState(database, stats)`.
+
+The runtime does not load or write `data/legacy/summaries.jsonl`,
+`data/legacy/entities.jsonl`, `data/legacy/quotes.jsonl`,
+`data/legacy/quote_failures.jsonl`, `data/legacy/results.jsonl`,
+`data/legacy/processed.jsonl`, or `data/legacy/posted.json`. These seven files
+remain preserved historical migration, audit, and compatibility inputs; they
+have not been deleted.
+
+Canonical database snapshots live in `backups/database/`. Immutable migration
+snapshots live in `backups/migration/`; in particular,
+`backups/migration/pre-migration-2026-08-13/` retains its original
+`SHA256SUMS.txt` and read-only permissions. Generated reports live under
+`reports/`, and analysis artifacts live under `analysis/`.
+
+## Canonical database backups
+
+Create a preserved manual checkpoint with:
+
+    python backup_database.py --label before-major-change
+
+Manual checkpoints are byte-for-byte copies in `backups/database/` with a
+metadata sidecar and are preserved indefinitely. Dangerous maintenance
+`--apply` commands create exactly one verified operational backup immediately
+before their first canonical write, then prune only metadata-identified,
+non-preserved operational backups older than 90 days. Historical snapshots and
+migration backups are never automatically pruned. A backup failure aborts the
+maintenance apply before canonical mutation; dry-runs create no backup.
+
+Normal `main.py` bot runs intentionally do not create per-run snapshots.
+
+Each canonical entry owns identity fields plus `summary`, `wikidata`,
+`quotes`, `evaluation`, `posting`, and `migration` provenance/conflicts.
+
+## Current content, evaluation, and posting flow
+
+- `database[title]["summary"]`: non-empty `text` is a cache hit. A successful
+  fetch writes `text`, `source: "Wikipedia"`, and integer `fetched_at`; a
+  failure returns `None` without appending `summaries.jsonl`.
+- `database[title]["wikidata"]`: `unknown`, `available`, and `unavailable`
+  are canonical states. Known states skip preparation; batch lookup requests
+  only unresolved titles. Evaluation uses a canonical-to-prepared adapter, not
+  `entity_cache`, and never appends `entities.jsonl`.
+- `database[title]["quotes"]`: `status`, `items`, `failure`, and `fetched_at`
+  live together. `available` is a cache hit even with a migrated empty list;
+  failure metadata drives retry suppression and preserves known quotes. There
+  is no runtime append to `quotes.jsonl` or `quote_failures.jsonl`.
+- `database[title]["evaluation"]` contains `status`, `algorithm_version`,
+  named confidences, `reasons`, `legacy_result`, and `processed_at`.
+  `CURRENT_EVALUATION_ALGORITHM_VERSION` is `1`: accepted/rejected version-1
+  entries skip; `null`/mismatched versions and `unprocessed` entries are
+  evaluated when encountered. Workers return flat results; the completion loop
+  calls `persist_canonical_evaluation()`, which preserves `legacy_result` and
+  migration provenance/conflicts while updating the current evaluation bundle.
+- `database[title]["posting"]` owns `has_been_posted`, `posted_at`, and
+  `legacy_posted_without_timestamp`. Candidate eligibility requires accepted
+  evaluation, non-empty quotes, and `has_been_posted == false`. Selection uses
+  `max(content_confidence, -1) + 2` as its only weight. Quote count affects
+  eligibility only because at least one quote is required; additional quotes
+  do not increase posting probability. After a philosopher is selected, quote
+  selection separately gives shorter eligible quotes a moderate
+  `1 / sqrt(max(word_count, 8))` presentation preference; every eligible quote
+  remains selectable.
+  A successful new post appends
+  one integer Unix timestamp and preserves both existing timestamps and the
+  legacy unknown-date marker.
+
+Posting order is candidate selection → message formatting → Telegram send →
+canonical posting persistence on success. Telegram failure makes no posting
+mutation. A post that succeeds externally but fails canonical persistence is
+reported without a `posted.json` fallback, so duplicate-post risk remains.
+
+## Current persistence, configuration, and HTTP safety
+
+Normal domain writes use `cache.update_database_entry()`. Network/API work is
+outside the shared `persistence_lock`; the transaction reads the latest entry,
+deep-copies and changes one section, validates and serializes a temporary
+snapshot, fsyncs and validates it, atomically replaces the database, fsyncs
+the directory, then commits that title in memory. `stats_lock` protects stats
+separately.
+
+`config` and `main` are import-safe. `main()` explicitly calls
+`load_environment()`; Telegram settings are read at use time, and missing
+token/chat configuration returns `missing_configuration` without HTTP.
+`safe_request()` uses a thread-local session, configured timeout, bounded
+retries, and a checked `RequestResult`. Malformed Wikipedia search members are
+skipped, and malformed Wikidata `pageprops` do not crash batch lookup.
+
+_______________________
+
+# Historical Legacy Data Layout and Migration Inputs
+
+The remaining legacy-file sections preserve pre-canonical record shapes and
+migration/audit context. Any legacy loaders, caches, readers, or writers named
+there describe the former runtime architecture, not current persistence.
+
+## Historical runtime state and loaders
+
+| Historical attribute | Historical loader | In-memory type |
+|---|---|---|
+| `summary_cache` | `load_summary_cache()` | `dict[str, str]` |
+| `entity_cache` | `load_entity_cache()` | `dict[str, dict]` |
+| `processed_cache` | `load_processed_cache()` | `dict[str, dict]` |
+| `result_cache` | `load_result_cache()` | `dict[str, dict]` |
+| `quote_cache` | `load_quote_cache()` | `dict[str, list[dict]]` |
+| `quote_failure_cache` | `load_quote_failure_cache()` | `dict[str, dict]` |
+| `posted_titles` | `load_posted_titles()` | `list[str]` |
+
+## Historical source: `summaries.jsonl`
+
+- **Format:** JSONL; one object per line.
+- **Purpose:** cache Wikipedia REST-summary extracts by title.
+- **Effective key:** top-level `title`; duplicate lines are last-record-wins
+  when loaded.
+- **Loader:** `cache.load_summary_cache(SUMMARY_FILE, data_folder)`.
+- **Runtime shape:** `summary_cache[title]` is the summary **string**, not the
+  JSONL object.
+- **Reader:** `wikipedia_api.get_summary()`.
+- **Writer:** `wikipedia_api.get_summary()` calls
+  `cache.persist_jsonl_cache_entry()`.
+- **Canonical migration destination:** `summary.text`.
+
+| On-disk field | Type | Meaning |
+|---|---|---|
+| `title` | string | Exact Wikipedia title. |
+| `summary` | string | Wikipedia summary API `extract` text. |
+
+**On-disk example**
+
+```json
+{"title":"Heraclitus","summary":"Heraclitus was an ancient Greek pre-Socratic philosopher from the city of Ephesus..."}
+```
+
+The corresponding cache value is:
+
+```text
+summary_cache["Heraclitus"] == "Heraclitus was an ancient Greek pre-Socratic philosopher from the city of Ephesus..."
+```
+
+This intentionally distinguishes the JSONL envelope from the normalized cached
+string. A failed or unusable summary request returns `None` and does not add a
+record.
+
+## Historical source: `entities.jsonl`
+
+- **Format:** JSONL; one prepared-entity object per line.
+- **Purpose:** cache Wikidata facts prepared for evaluation.
+- **Effective key:** `title`; duplicate lines are last-record-wins in memory.
+- **Loader:** `cache.load_entity_cache(ENTITY_FILE, data_folder)`.
+- **Runtime shape:** `dict[str, dict]`; the complete entity record is retained.
+- **Reader/writer:** `evaluation.prepare_entity_cached()` reads cached records
+  and persists newly prepared records through
+  `cache.persist_jsonl_cache_entry()`.
+- **Canonical migration destination:** `wikidata`.
+
+Valid records have this shape:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `valid` | boolean | `true` when a Wikidata entity was prepared. |
+| `title` | string | Wikipedia title / cache key. |
+| `qid` | string | Wikidata identifier. |
+| `instances` | array of strings | `P31` identifiers. |
+| `occupations` | array of strings | `P106` identifiers. |
+| `birth` | integer or null | Year parsed from `P569`. |
+| `death` | integer or null | Year parsed from `P570`. |
+| `is_human` | boolean | Whether `Q5` is in `instances`. |
+| `is_philosopher` | boolean | Whether `Q4964182` is in `occupations`. |
+
+Invalid records are also current valid runtime output, but have a smaller
+shape: `{"valid": false, "reason": "no_qid", "title": ...}` or
+`{"valid": false, "reason": "no_entity", "title": ..., "qid": ...}`.
+
+**Valid on-disk example**
+
+```json
+{"valid":true,"title":"Charles Babbage","qid":"Q46633","instances":["Q5"],"occupations":["Q170790","Q4964182"],"birth":1791,"death":1871,"is_human":true,"is_philosopher":true}
+```
+
+## Historical source: `quotes.jsonl`
+
+- **Format:** JSONL; one title/quotes envelope per line.
+- **Purpose:** cache valid Wikiquote quotations by title.
+- **Effective key:** `title`; duplicate lines are last-record-wins in memory.
+- **Loader:** `cache.load_quote_cache(QUOTE_FILE, data_folder)`.
+- **Runtime shape:** `quote_cache[title]` is the `list[dict]` from the
+  on-disk `quotes` field, not the enclosing JSONL object.
+- **Readers:** `wikipedia_api.get_quotes()`, `wikipedia_api.get_random_quote()`,
+  and `utils.get_random_philosopher()`.
+- **Writer:** `wikipedia_api.get_quotes()` persists successes through
+  `cache.persist_jsonl_cache_entry()`.
+- **Canonical migration destination:** `quotes.items`.
+
+| On-disk field | Type | Meaning |
+|---|---|---|
+| `title` | string | Wikipedia title / cache key. |
+| `quotes` | array of objects | Valid quote objects. |
+| `quotes[].text` | string | Cleaned quote text. |
+| `quotes[].length` | integer | Character count of `text`. |
+| `quotes[].word_count` | integer | Word count of `text`. |
+| `quotes[].source` | string | Current value: `Wikiquote`. |
+
+**On-disk example**
+
+```json
+{"title":"Charles Taylor (philosopher)","quotes":[{"text":"To know who I am is a species of knowing where I stand.","length":55,"word_count":12,"source":"Wikiquote"}]}
+```
+
+`max_quotes` remains a compatibility parameter. The current runtime stores all
+valid fetched quotes and evaluates all stored quotes; it does not cap fetching,
+storage, or evaluation at `MAX_QUOTES`. Display selection still chooses one
+quote through `get_random_quote()`.
+
+## Historical source: `quote_failures.jsonl`
+
+- **Format:** JSONL; one failure record per failed Wikiquote attempt.
+- **Purpose:** retain the newest failure in memory and delay retry attempts.
+- **Effective key:** `title`; duplicate lines are last-record-wins in memory.
+- **Loader:** `cache.load_quote_failure_cache(QUOTE_FAILURE_FILE, data_folder)`.
+- **Runtime shape:** `dict[str, dict]`; each value is the complete latest
+  failure record loaded for that title.
+- **Writer:** `wikipedia_api.record_quote_failure()` writes through
+  `cache.persist_jsonl_cache_entry()`.
+- **Canonical migration destination:** `quotes.failure`.
+
+| Field | Type | Meaning |
+|---|---|---|
+| `title` | string | Wikipedia title / cache key. |
+| `reason` | string | Failure reason. Current writers use `http_404`, `http_429`, `request_exception`, `parsing_error`, or `no_quotes_found`. |
+| `timestamp` | integer | Unix time when the failure was recorded. |
+| `retries` | integer | Previous retry count plus one. |
+
+**On-disk example**
+
+```json
+{"title":"Richard Moran (philosopher)","reason":"http_404","timestamp":1780580890,"retries":1}
+```
+
+`quote_retry_base_days()` also recognizes historical reason spellings such as
+`404`, `rate_limit`, and `timeout` while reading old records. The runtime keeps
+only the newest record for a title in `quote_failure_cache`; older JSONL lines
+remain source data for migration.
+
+## Historical source: `results.jsonl`
+
+- **Format:** JSONL; one accepted evaluation entry per line.
+- **Purpose:** cache newly accepted candidates and retain historical accepted
+  records for migration.
+- **Effective key:** `title`; duplicate lines are last-record-wins in memory.
+- **Loader:** `cache.load_result_cache(RESULT_FILE, data_folder)`.
+- **Runtime shape:** `result_cache` is `dict[str, dict]` containing complete
+  records.
+- **Writer:** `cache.persist_evaluation_entry()` writes current accepted entries
+  to this file through `persist_jsonl_cache_entry()`.
+- **Canonical migration destination:** primarily `evaluation`, with relevant legacy facts
+  merged into `summary`, `wikidata`, and `quotes` when present.
+
+Historical pre-canonical output from `evaluation.accept()` had these fields:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `title` | string | Wikipedia title / cache key. |
+| `status` | string | Always `accepted` in this file for newly written entries. |
+| `philosopher_confidence` | integer | Combined philosopher bonus minus nonphilosopher penalty. |
+| `human_confidence` | integer | Combined human bonus minus nonhuman penalty. |
+| `content_confidence` | integer | Combined content bonus minus noncontent penalty. |
+| `reasons` | array of strings | Ordered filter reasons. |
+| `last_processed` | number | Unix timestamp from `time.time()`. |
+
+**Historical output example**
+
+```json
+{"title":"Heraclitus","status":"accepted","philosopher_confidence":4,"human_confidence":2,"content_confidence":2,"reasons":["title bonus (+2): (philosopher)"],"last_processed":1780580890.25}
+```
+
+Historical records such as `{"title": ..., "accepted": true, ...}` are
+**migration input**, not canonical runtime output. `utils.is_accepted_record()`
+and `utils.is_rejected_record()` recognize both the historical `accepted`
+boolean and current `status` strings. Candidate selection also retains its
+historical `score` fallback of `1` when a record has no `score` field.
+
+## Historical source: `processed.jsonl`
+
+- **Format:** JSONL; one rejected evaluation entry per line.
+- **Purpose:** cache newly rejected candidates and retain historical rejected
+  records for migration.
+- **Effective key:** `title`; duplicate lines are last-record-wins in memory.
+- **Loader:** `cache.load_processed_cache(PROCESSED_FILE, data_folder)`.
+- **Runtime shape:** `processed_cache` is `dict[str, dict]` containing complete
+  records.
+- **Writer:** `cache.persist_evaluation_entry()` writes current rejected entries
+  to this file through `persist_jsonl_cache_entry()`.
+- **Canonical migration destination:** `evaluation` with `status: "rejected"`.
+
+Historical pre-canonical output from `evaluation.reject()` used the same field set as an
+accepted entry, except `status` is `rejected`:
+
+```json
+{"title":"A book title","status":"rejected","philosopher_confidence":0,"human_confidence":-1,"content_confidence":-1,"reasons":["summary nonhuman penalty (-1): a book by"],"last_processed":1780580890.25}
+```
+
+Historical records such as `{"title": ..., "accepted": false, "score": 0,
+"confidence": 0, "reasons": [...], "result": null}` are **migration input**,
+not canonical runtime output. The historical generic `score`, `confidence`, and
+`result` fields must remain available to migration but are not written by the
+current evaluator.
+
+## Historical source: `posted.json`
+
+- **Format:** one JSON array, not JSONL.
+- **Purpose:** remember posted titles so candidate selection excludes them.
+- **In-memory shape:** `posted_titles` is `list[str]`; list membership is the
+  effective key and duplicates are not removed automatically.
+- **Loader:** `cache.load_posted_titles(POSTED_FILE, data_folder)` validates
+  that every item is a non-empty string.
+- **Writer:** `cache.save_posted_titles(POSTED_FILE, posted_titles, data_folder)`.
+- **Canonical migration destination:** `posting.has_been_posted` and legacy-posting metadata.
+
+**On-disk example**
+
+```json
+["Graham Harman", "David Hartley (philosopher)"]
+```
+
+In the former runtime, `main.send_and_record_post()` appended the chosen title
+and saved this list only after successful Telegram delivery. The canonical
+runtime instead uses the posting flow documented above.
+
+## Current persistence and concurrency
+
+`cache.load_database()`, `get_entry()`, `rewrite_database()`, `upsert_entry()`,
+`update_database_entry()`, and `backup_database()` are the canonical repository
+operations. Domain-specific runtime updates use `update_database_entry()`;
+evaluation reaches it through `persist_canonical_evaluation()`, and posting
+through `persist_canonical_posting()`.
+
+The shared `runtime.persistence_lock` is the sole canonical repository
+transaction lock. It prevents simultaneous rewrites and stale same-title
+section replacement; callers do not acquire it before calling the repository.
+`runtime.stats_lock` separately protects counters, and repository I/O finishes
+before success-dependent stats are incremented.
+
+## Evaluation contract
+
+Every filter returns `evaluation.FilterResult`. It stores separate bonus and
+penalty magnitudes plus a `reasons` list. Penalties are positive magnitudes;
+the final values are calculated as:
+
+```text
+human_confidence       = human_bonus       - nonhuman_penalty
+philosopher_confidence = philosopher_bonus - nonphilosopher_penalty
+content_confidence     = content_bonus     - noncontent_penalty
+```
+
+`process_title()` evaluates filters in this deterministic order:
+
+```text
+title → summary → Wikidata → quotes
+```
+
+`combine_filter_results()` adds matching fields and preserves reasons in that
+same order. A title is accepted only when both `human_confidence > 0` and
+`philosopher_confidence > 0`; otherwise it is rejected. `content_confidence`
+is recorded but is informational and is not an acceptance threshold.
+
+Before evaluating, `process_title()` skips only canonical accepted/rejected
+entries whose `evaluation.algorithm_version` is `1`. Historical `null` or
+mismatched versions, unprocessed entries, and absent titles remain eligible
+when encountered.
+
+## Worker execution and application startup
+
+`main.evaluate_pages()` uses `ThreadPoolExecutor` to submit `process_title()`
+for each discovered page. It maps futures to pages and delegates completion
+handling to `worker_runner.process_completed_futures()`.
+
+For each completed future, `process_completed_futures()` catches `Exception`
+(not `BaseException`) from `future.result()`, reports the title and error, and
+continues handling independent completed futures. It separately catches and
+reports a per-entry persistence `OSError`; that failed title is not marked as
+persisted, while other completed entries continue.
+
+`main.main()` coordinates explicit environment loading, canonical runtime
+loading, discovery, Wikidata lookup, worker evaluation, candidate selection,
+message formatting, Telegram delivery, and canonical posting persistence. No
+database load, API request, executor creation, Telegram request, or file write
+occurs merely because `main.py` is imported.
+
+## Implemented `database.jsonl` boundary
+
+`database.jsonl` is the active runtime database. Migration has completed; its
+schema is implemented below, and normal runtime reads/writes use the canonical
+repository rather than legacy-file append helpers.
+
+_______________________
+
+# Database Schema Specification
+
+This is the implemented contract for `database.jsonl`. It supersedes the
+separate historical runtime cache schemas described above. The file is JSONL: each
+non-empty line is one complete, current JSON object for one Wikipedia title.
+The top-level `title` is the unique primary key. A runtime load must reject or
+report duplicate titles rather than silently choosing one.
+
+The design deliberately stores a complete snapshot per candidate. This fits
+the application: the scraper, evaluator, and Telegram selector all need data
+about the same person at the same time. It also makes one entry portable and
+easy to inspect without joining several files.
+
+The persistence model is one current snapshot per title. The application loads
+the complete database into memory, updates entries there, and atomically
+rewrites the complete `database.jsonl` file. It does not use an append-only
+event log. This guarantees that each title has one current record and that a
+partial write cannot leave a mixture of old and new evaluation fields.
+
+## Required shape and complete example
+
+Every entry must contain every top-level section below, even when a source has
+not yet been fetched. Required sections use empty objects, empty lists, or
+explicit `null` values rather than being omitted. This makes readers simpler
+and makes the difference between "not fetched" and "no data was found"
+visible. The example below represents a migrated historical evaluation: its
+decision is retained, but its evaluation algorithm version is unknown.
+
+```json
+{
+  "schema_version": 1,
+  "title": "Charles Babbage",
+  "display_title": "Charles Babbage",
+  "summary": {
+    "text": "Charles Babbage was an English polymath. A mathematician, philosopher, inventor and mechanical engineer, Babbage originated the concept of a digital programmable computer.",
+    "source": "Wikipedia",
+    "fetched_at": null
+  },
+  "wikidata": {
+    "status": "available",
+    "reason": null,
+    "qid": "Q46633",
+    "instances": ["Q5"],
+    "occupations": ["Q170790", "Q82594", "Q4964182"],
+    "birth_year": 1791,
+    "death_year": 1871,
+    "is_human": true,
+    "is_philosopher": true,
+    "fetched_at": null
+  },
+  "quotes": {
+    "status": "available",
+    "items": [
+      {
+        "text": "The errors which arise from the absence of facts are far more numerous and more durable than those which result from unsound reasoning respecting true data.",
+        "length": 156,
+        "word_count": 26,
+        "source": "Wikiquote"
+      }
+    ],
+    "failure": null,
+    "fetched_at": null
+  },
+  "evaluation": {
+    "status": "accepted",
+    "algorithm_version": null,
+    "human_confidence": 6,
+    "philosopher_confidence": 2,
+    "content_confidence": null,
+    "reasons": [
+      "wikidata bonus: is_human = true",
+      "wikidata bonus: is_philosopher = true",
+      "wikidata bonus: birth_w not None",
+      "quotes bonus: quotes exist",
+      "quotes bonus: good quotes exist"
+    ],
+    "legacy_result": null,
+    "processed_at": null
+  },
+  "posting": {
+    "has_been_posted": false,
+    "posted_at": [],
+    "legacy_posted_without_timestamp": false
+  },
+  "migration": {
+    "legacy_sources": ["entities.jsonl", "results.jsonl"],
+    "conflicts": []
+  }
+}
+```
+
+`fetched_at`, `processed_at`, and `algorithm_version` are `null` in this
+example because the legacy files did not record them. Runtime code populates
+new content timestamps with integer Unix timestamps and sets
+`algorithm_version` when it evaluates data. These fields support conflict
+resolution, debugging, and deliberate reprocessing policy.
+
+## Top-level sections
+
+| Section / field | Required | Why it exists and why it is grouped this way |
+|---|---:|---|
+| `schema_version` | yes | Identifies this entry's contract version, allowing deliberate future migrations. |
+| `title` | yes | Canonical Wikipedia title and the database primary key. |
+| `display_title` | yes | Telegram-ready title without disambiguation text; it is identity/display data, not an evaluation result. |
+| `summary` | yes | Groups the text fetched from the Wikipedia summary service with its source and retrieval time. |
+| `wikidata` | yes | Groups facts derived from one Wikidata entity, including classification and dates. |
+| `quotes` | yes | Groups quote data and its retry state because both describe one Wikiquote retrieval. |
+| `evaluation` | yes | Groups the scraper's decision, current-algorithm version, confidence values, reasons, and evaluation time. |
+| `posting` | yes | Groups Telegram-post history, which is separate from whether a candidate is accepted. |
+| `migration` | yes | Records minimal provenance and unresolved merge conflicts without mixing legacy record shapes into normal runtime data. |
+
+## Field contract
+
+### Identity fields
+
+| Field | Type | Required | May be null | Default | Meaning |
+|---|---|---:|---:|---|---|
+| `schema_version` | integer | yes | no | `1` | Version of this schema used by the entry. |
+| `title` | non-empty string | yes | no | none | Exact canonical Wikipedia page title; unique database key. |
+| `display_title` | non-empty string | yes | no | value of `title` | Human-facing title, normally `clean_title(title)`. Preserves legacy `display_title` when available. |
+
+### `summary`
+
+| Field | Type | Required | May be null | Default | Meaning |
+|---|---|---:|---:|---|---|
+| `summary` | object | yes | no | object below | Wikipedia summary section. |
+| `summary.text` | string | yes | yes | `null` | Summary extract. `null` means it has not been retrieved or no usable extract is known; `""` is not used. |
+| `summary.source` | string | yes | no | `"Wikipedia"` | Origin label for `text`. |
+| `summary.fetched_at` | integer | yes | yes | `null` | Unix timestamp for a new successful fetch. Legacy data has no timestamp. |
+
+### `wikidata`
+
+| Field | Type | Required | May be null | Default | Meaning |
+|---|---|---:|---:|---|---|
+| `wikidata` | object | yes | no | object below | Wikidata lookup and derived classification section. |
+| `wikidata.status` | string enum | yes | no | `"unknown"` | `unknown`, `available`, or `unavailable`. It states whether usable entity data is known. |
+| `wikidata.reason` | string | yes | yes | `null` | Reason for `unavailable`, such as `no_qid` or `no_entity`; otherwise `null`. |
+| `wikidata.qid` | string | yes | yes | `null` | Wikidata entity identifier. |
+| `wikidata.instances` | array of strings | yes | no | `[]` | `P31` instance-of identifiers. |
+| `wikidata.occupations` | array of strings | yes | no | `[]` | `P106` occupation identifiers. |
+| `wikidata.birth_year` | integer | yes | yes | `null` | Year parsed from `P569`. |
+| `wikidata.death_year` | integer | yes | yes | `null` | Year parsed from `P570`. |
+| `wikidata.is_human` | boolean | yes | yes | `null` | Derived from `instances`; `null` until classification can be made. |
+| `wikidata.is_philosopher` | boolean | yes | yes | `null` | Derived from `occupations`; `null` until classification can be made. |
+| `wikidata.fetched_at` | integer | yes | yes | `null` | Unix timestamp for a new successful entity preparation. |
+
+### `quotes`
+
+| Field | Type | Required | May be null | Default | Meaning |
+|---|---|---:|---:|---|---|
+| `quotes` | object | yes | no | object below | Wikiquote data and retry state. |
+| `quotes.status` | string enum | yes | no | `"unknown"` | `unknown`, `available`, `not_found`, or `failed`. Migration preserves the legacy meaning exactly, so a migrated historical `available` record may have `items: []`. A new fetch with no quotes must use `not_found`. |
+| `quotes.items` | array of quote objects | yes | no | `[]` | Usable quotes. An empty list is known to contain no selected quotes, not an unknown list. |
+| `quotes.items[].text` | non-empty string | yes per item | no | none | Quote text. |
+| `quotes.items[].length` | integer | yes per item | no | derived from `text` | Character count retained from legacy data or recalculated for new quotes. |
+| `quotes.items[].word_count` | integer | yes per item | no | derived from `text` | Word count retained from legacy data or recalculated for new quotes. |
+| `quotes.items[].source` | string | yes per item | no | `"Wikiquote"` | Quote source label. |
+| `quotes.failure` | object | yes | yes | `null` | Newest failed lookup only; `null` if there is no known active failure. Older failures remain only in backups and logs. |
+| `quotes.failure.reason` | string | required if failure exists | no | none | Normalised failure reason, for example `http_404` or `no_quotes_found`. |
+| `quotes.failure.timestamp` | integer | required if failure exists | no | none | Unix timestamp of the failure. |
+| `quotes.failure.retries` | integer | required if failure exists | no | none | Retry count at failure time. |
+| `quotes.fetched_at` | integer | yes | yes | `null` | Unix timestamp for a new successful quote retrieval. |
+
+### `evaluation`
+
+| Field | Type | Required | May be null | Default | Meaning |
+|---|---|---:|---:|---|---|
+| `evaluation` | object | yes | no | object below | Candidate classification and scoring result. |
+| `evaluation.status` | string enum | yes | no | `"unprocessed"` | `unprocessed`, `accepted`, or `rejected`. It is the decision produced by the stored evaluation, but it is current only when `algorithm_version` equals the current algorithm version. |
+| `evaluation.algorithm_version` | positive integer | yes | yes | `null` | Version of the evaluation algorithm that produced this result. New evaluations start at version `1`; `null` identifies a migrated historical evaluation whose producing version is unknown. |
+| `evaluation.human_confidence` | integer | yes | yes | `null` | Canonical named human-confidence value. Migration preserves the legacy value when present; otherwise it is `null`. |
+| `evaluation.philosopher_confidence` | integer | yes | yes | `null` | Canonical named philosopher-confidence value. Migration preserves the legacy value when present; otherwise it is `null`. |
+| `evaluation.content_confidence` | integer | yes | yes | `null` | Canonical named content-confidence value. Migration preserves the legacy value when present; otherwise it is `null`. |
+| `evaluation.reasons` | array of strings | yes | no | `[]` | Ordered explanations produced by evaluation. |
+| `evaluation.legacy_result` | object | yes | yes | `null` | Historical `processed.jsonl.result` value. It is retained until it is proven unnecessary because it was collected data. |
+| `evaluation.processed_at` | number | yes | yes | `null` | Unix timestamp retained from legacy last_processed or written by new evaluation. May contain a fractional component. null means no processing timestamp is known. |
+
+## Evaluation versioning and re-evaluation
+
+An evaluation is the output of a particular algorithm version, not merely a
+set of confidence fields. Older records may be missing one, two, or all three
+confidence values, or may have been produced with different scoring rules.
+They are historical results, not complete current evaluations.
+
+The completed migration retained every normalisable historical decision, reason,
+processing timestamp, and named confidence value, but set
+`evaluation.algorithm_version` to `null`. A `null` version means "the
+producing evaluator version is unknown"; it does not mean that only
+`content_confidence` is missing. The migration did not call the evaluator or
+invent a missing named confidence value.
+
+The application defines `CURRENT_EVALUATION_ALGORITHM_VERSION = 1`. Increase
+it only when an algorithm change could alter a candidate's status, confidence
+values, or reasons. An evaluation is current only when:
+
+```text
+evaluation.algorithm_version == CURRENT_EVALUATION_ALGORITHM_VERSION
+```
+
+Whenever:
+
+```text
+evaluation.algorithm_version != CURRENT_EVALUATION_ALGORITHM_VERSION
+```
+
+the record is eligible for evaluation when encountered. This includes migrated
+records with `algorithm_version: null`, as well as records created by an older
+algorithm; there is no automatic mass re-evaluation pass.
+
+| Approach | Advantages | Disadvantages |
+|---|---|---|
+| Store `evaluation.requires_reprocessing` | Very easy to read as a boolean. | Duplicates a fact that can drift out of sync; it cannot say which algorithm created the result. |
+| Add `needs_reprocessing` as an evaluation status | Makes the work queue visible in `status`. | Overloads status: it loses the historical accepted/rejected decision or requires an additional legacy-status field. |
+| Store `evaluation.algorithm_version` | Records which algorithm produced the result; automatically handles every future algorithm revision with one comparison; `null` cleanly marks records from before versioning. | Requires one application constant for the current algorithm version and a version comparison. |
+
+**Recommendation:** use `evaluation.algorithm_version` as the single source
+of truth. Do not store a separate `requires_reprocessing` field. It gives the
+application one durable test for both the initial legacy backlog and future
+algorithm improvements.
+
+### Completed migration and runtime re-evaluation
+
+The one-time migration read, preserved, normalised, and validated legacy data
+without calling APIs or the evaluator. Runtime does not run a separate mass
+post-migration pass: it re-evaluates eligible entries only when normal page
+discovery encounters them.
+
+After a successful current evaluation, the completion loop transactionally
+replaces `status`, `human_confidence`, `philosopher_confidence`,
+`content_confidence`, `reasons`, `processed_at`, and `algorithm_version`
+together. It preserves `evaluation.legacy_result` and `migration` provenance,
+so one canonical evaluation bundle represents one evaluator run without
+discarding historical evidence.
+
+### `posting`
+
+| Field | Type | Required | May be null | Default | Meaning |
+|---|---|---:|---:|---|---|
+| `posting` | object | yes | no | object below | Telegram posting history. |
+| `posting.has_been_posted` | boolean | yes | no | `false` | Whether this title has ever been posted. |
+| `posting.posted_at` | array of integers | yes | no | `[]` | Known Unix timestamps for posts, ordered oldest to newest. |
+| `posting.legacy_posted_without_timestamp` | boolean | yes | no | `false` | True when a legacy posting is known but its time is unavailable. It may coexist with later known timestamps. |
+
+### `migration`
+
+| Field | Type | Required | May be null | Default | Meaning |
+|---|---|---:|---:|---|---|
+| `migration` | object | yes | no | object below | Minimal provenance for the one-time migration. |
+| `migration.legacy_sources` | array of strings | yes | no | `[]` | Names of legacy files that supplied data for this entry. |
+| `migration.conflicts` | array of conflict objects | yes | no | `[]` | Values that could not be selected automatically. It is normally empty. |
+| `migration.conflicts[].field` | string | yes per item | no | none | Canonical field name with the disagreement. |
+| `migration.conflicts[].values` | array | yes per item | no | none | Distinct source values, each tagged with its source file. |
+| `migration.conflicts[].resolution` | string | yes per item | no | none | The rule or manual decision used to select the canonical value. |
+
+## Meaning of `null`, empty values, and absence
+
+- `null` means the field is part of the schema but its value is unknown,
+  unavailable, or was not recorded by a legacy source. It must never mean
+  `false`, zero, or an empty list.
+- `[]` means the field is known and currently has no items. For example,
+  `quotes.items: []` means no selected quotes are stored.
+- `""` is not a valid replacement for unknown summary or quote text.
+- A missing required field is invalid database data. Optional nested fields are
+  limited to `quotes.failure.*` and `migration.conflicts.*`, because those
+  objects do not exist when their parent is `null` or empty.
+
+## Implemented legacy-file merge rules
+
+The completed migration created entries for the union of all legacy titles.
+Historical generic
+aggregate fields such as `score` and `confidence` are not canonical
+`database.jsonl` fields and are not copied into a generic replacement field.
+The three named fields `evaluation.human_confidence`,
+`evaluation.philosopher_confidence`, and `evaluation.content_confidence` are
+canonical fields. When a legacy evaluation record contains one of those named
+values, migration preserves it in the corresponding canonical field. When a
+named value is absent, migration writes `null`; it must not invent or recompute
+one. The original legacy records, including obsolete generic aggregate fields,
+remain byte-for-byte preserved in the read-only legacy backup and migration
+report.
+
+| Legacy file | Source fields | Canonical destination and rule |
+|---|---|---|
+| `summaries.jsonl` | `title`, `summary` | Create/find entry by `title`; set `summary.text`; set `summary.source` to `Wikipedia`; leave `summary.fetched_at` as `null`. |
+| `entities.jsonl` | `valid`, `reason`, `qid`, `instances`, `occupations`, `birth`, `death`, `is_human`, `is_philosopher` | Set `wikidata.status` to `available` when `valid` is true, otherwise `unavailable`; map `reason`, `qid`, lists, booleans, and years (`birth` → `birth_year`, `death` → `death_year`); leave `fetched_at` null. |
+| `quotes.jsonl` | `title`, `quotes[]` | Set `quotes.items` to the source array and `quotes.status` to `available`; retain every quote object's four fields. |
+| `quote_failures.jsonl` | `title`, `reason`, `timestamp`, `retries` | Set `quotes.failure` to the newest failure for the title. Preserve older failures only in backups and logs. Set `quotes.status` to `not_found` only when the reason is `no_quotes_found`; otherwise set it to `failed`, unless quotes are also available. |
+| `results.jsonl` | `accepted`, `display_title`, `is_human`, `is_philosopher`, `birth_w`, `death_w`, `summary`, `quotes`, named confidence fields, `reasons`, `last_processed` when present | Set `evaluation.status` to `accepted` for `accepted: true`; set `evaluation.algorithm_version` to `null`; preserve `display_title`; map summary, quotes, classifications, years, reasons, `last_processed` → `evaluation.processed_at`, and each named confidence value when present. Set each absent named confidence field to `null`. Migration does not run the current evaluator. |
+| `processed.jsonl` | `accepted`, historical generic aggregate fields, optional named confidence fields, `reasons`, `result`, `last_processed` when present | Set `evaluation.status` to `rejected` for `accepted: false`; set `evaluation.algorithm_version` to `null`; map reasons, `last_processed` → `evaluation.processed_at`, `result` → `legacy_result`, and each named confidence value when present. Set each absent named confidence field to `null`. Preserve generic `score` and `confidence` only in the immutable backup and migration report. |
+| Current evaluator output, if found in legacy result/processed files | `status`, named confidence fields, `summary`, `wikidata`, `quotes`, `reasons`, `last_processed` | Map `status` directly; set `evaluation.algorithm_version` to `null` because historical producing-version provenance is unknown; map each named confidence value when present and use `null` when absent; map `wikidata` and nested quote data into their sections; map `last_processed` → `evaluation.processed_at`. Migration does not rerun evaluation. |
+| `posted.json` | title strings | Set `posting.has_been_posted` true and `posting.legacy_posted_without_timestamp` true. Keep `posted_at` as `[]`; no timestamp may be invented. |
+| `database.jsonl` | canonical migration output | Does not contribute legacy values; it is the validated runtime database. |
+
+For every source contributing to an entry, add its filename to
+`migration.legacy_sources`. The immutable pre-migration backup remains the
+authoritative byte-for-byte copy of the original files.
+
+## Historical conflict-resolution rules
+
+The completed migration applied these rules and recorded non-identical
+competing values in `migration.conflicts`.
+
+1. **Same value:** keep it once; it is not a conflict.
+2. **Timestamped values:** for quote failures and evaluator records with
+   `last_processed`, use the record with the newest timestamp. A record with
+   no timestamp never replaces one with a timestamp automatically.
+3. **Specialised cache over embedded duplicate:** `summaries.jsonl`,
+   `entities.jsonl`, and `quotes.jsonl` take precedence over copies embedded
+   in `results.jsonl`, because those files exist specifically for that data.
+4. **Known data over unknown:** a non-null value wins over `null`; a non-empty
+   list wins over an empty list. This rule does not replace a known explicit
+   empty quote list with unknown data, and it does not change a migrated
+   legacy quote status.
+5. **Evaluation status:** when accepted and rejected legacy evaluations
+   conflict and cannot be resolved reliably from comparable timestamps, do not
+   choose either decision: set `evaluation.status` to `unprocessed`, keep
+   `evaluation.algorithm_version` as `null`, and record the conflict. Migration
+   did not re-evaluate the title; normal runtime evaluation may later resolve
+   it when the title is encountered. A reliably newer timestamped evaluation
+   may be selected only under rule 2 and must be recorded as the conflict
+   resolution.
+6. **Display title:** use the historical `results.jsonl.display_title` when
+   present; otherwise derive it from `title` during migration.
+7. **Quotes and failure together:** retain available `quotes.items` and the
+   newest `quotes.failure`. Preserve the migrated legacy quote status exactly;
+   for newly fetched data, use `not_found` when no quotes exist. A past failure
+   remains diagnostic information rather than deleting known quotes.
+8. **Unresolvable disagreement:** use the safe default for the field (`null`,
+   `[]`, or `unprocessed`) and require a manual resolution recorded in
+   `migration.conflicts`. Never discard either source value.
+
+## `legacy_records`: permanent field or migration-only data?
+
+Two reasonable designs exist.
+
+| Design | Advantages | Disadvantages |
+|---|---|---|
+| Keep full `legacy_records` inside every permanent database entry | Gives immediate per-entry auditability and preserves original legacy shapes in one place. | Duplicates large summaries and quote arrays, makes entries much larger, leaves obsolete field names permanent, and forces every future reader to ignore a second schema. |
+| Use `legacy_records` only during migration, retain immutable backups and a migration report | Keeps the runtime database small and canonical while preserving the original files byte-for-byte; new code has one schema to understand. | Investigating an old raw record requires consulting the backup or migration report. |
+
+**Recommendation:** use `legacy_records` only as an in-memory migration
+structure or optional temporary migration output, not as a permanent field in
+`data/database.jsonl`. Keep the immutable migration backup under
+`backups/migration/` and the migration report for the obsolete historical
+aggregate values and any raw legacy record.
+The small permanent `migration` section provides useful provenance without
+embedding a second, obsolete schema.
+
+## Implemented canonical decisions
+
+1. **Database write model:** use one current snapshot per title. Load the
+   database into memory, update entries, and atomically rewrite the complete
+   `database.jsonl`; do not use an append-only event log.
+2. **Quote-failure retention:** store only the newest failure in the runtime
+   database. Historical failures remain available through backups and logs.
+3. **Historical evaluation conflicts:** when competing historical evaluations
+   cannot be resolved reliably, set `evaluation.status` to `"unprocessed"`,
+   record the conflict in `migration.conflicts`, and let normal runtime
+   evaluation determine the result if the title is encountered. Do not guess.
+4. **Quote status:** preserve legacy quote status exactly during migration. For
+   newly fetched data, use `quotes.status: "not_found"` when no quotes exist;
+   do not write `"available"` with an empty list for new retrievals.
+5. **Posting history:** retain `posting.posted_at` as an array of timestamps,
+   preserving multiple known posts of the same title.
+
+# Legacy Migration Audit Results
+
+Audit date: 2026-08-06
+
+The read-only audit inspected all configured legacy data files.
+
+## Counts
+
+| File | Records | Malformed JSON | Duplicate titles |
+|---|---:|---:|---:|
+| summaries.jsonl | 1407 | 0 | 0 |
+| entities.jsonl | 1362 | 0 | 0 |
+| quotes.jsonl | 251 | 0 | 1 |
+| quote_failures.jsonl | 1210 | 0 | 1 |
+| results.jsonl | 1466 | 0 | 0 |
+| processed.jsonl | 1435 | 0 | 0 |
+| posted.json | 13 | 0 | 0 |
+
+quotes.jsonl:
+- duplicate title: Ada Lovelace
+
+quote_failures.jsonl:
+- duplicate title: Ada Lovelace
+- four records for that title
+
+Total source records: 7144.
+
+## Schema observations
+
+- entities.jsonl contains two expected legacy shapes:
+  - valid entity records
+  - invalid records containing title, valid, and reason
+- results.jsonl contains five historical shapes.
+- processed.jsonl contains three historical shapes.
+- These differences were handled explicitly by the completed migration.
+
+## Evaluation conflicts
+
+Twenty titles appear as accepted in results.jsonl and rejected in
+processed.jsonl.
+
+Because the conflicting records did not have reliable comparable timestamps,
+the completed migration:
+
+1. preserve both source records in the immutable backup;
+2. record the conflict in the migration report;
+3. set the normalized evaluation status to "unprocessed";
+4. set evaluation.algorithm_version to null;
+5. left the title eligible for normal runtime evaluation when encountered.
+
+The migration did not guess whether the accepted or rejected record was correct.

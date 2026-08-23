@@ -1,0 +1,25 @@
+*.pyc
+.ipynb_checkpoints/
+.vscode/
+
+.venv/
+venv/
+.env
+.pytest_cache/
+__pycache__/
+*.py[cod]
+
+# Local runtime state and generated operational artifacts
+data/
+backups/
+reports/
+analysis/
+
+# Runtime logs and captured bot output
+bot.log
+bot-run-*.txt
+
+# Local temporary files
+*.tmp
+*.swp
+.DS_Store
