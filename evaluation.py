@@ -4,7 +4,7 @@ import unicodedata
 from typing import List
 from dataclasses import dataclass, field
 from cache import update_database_entry
-from config import (
+from wiki_philosopher_bot.config import (
     CURRENT_EVALUATION_ALGORITHM_VERSION,
     DATABASE_FILE,
     MAX_QUOTES, 

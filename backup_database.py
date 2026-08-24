@@ -3,12 +3,12 @@
 import argparse
 
 from cache import create_database_backup
-from config import (
+from wiki_philosopher_bot.config import (
     CANONICAL_DATA_FOLDER,
     DATABASE_BACKUP_FOLDER,
     OPERATIONAL_BACKUP_RETENTION_DAYS,
 )
-from runtime import persistence_lock
+from wiki_philosopher_bot.runtime import persistence_lock
 
 
 def parse_args(argv=None):

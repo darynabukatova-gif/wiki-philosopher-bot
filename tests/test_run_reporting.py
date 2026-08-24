@@ -4,9 +4,9 @@ from pathlib import Path
 
 import pytest
 
-from database_schema import make_empty_database_entry
-from database_schema import serialize_database_entries
-from run_reporting import (
+from wiki_philosopher_bot.database_schema import make_empty_database_entry
+from wiki_philosopher_bot.database_schema import serialize_database_entries
+from wiki_philosopher_bot.run_reporting import (
     build_run_report,
     capture_run_baseline,
     format_run_summary,

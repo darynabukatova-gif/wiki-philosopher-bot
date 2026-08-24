@@ -10,7 +10,7 @@ from migrate_database import (
     merge_summary_records,
     merge_entity_records,
 )
-from config import (
+from wiki_philosopher_bot.config import (
     ENTITY_FILE,
     POSTED_FILE,
     PROCESSED_FILE,

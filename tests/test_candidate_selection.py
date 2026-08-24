@@ -1,14 +1,14 @@
 import pytest
 
-from config import CURRENT_QUOTE_PARSER_VERSION
+from wiki_philosopher_bot.config import CURRENT_QUOTE_PARSER_VERSION
 
-from utils import (
+from wiki_philosopher_bot.utils import (
     candidate_selection_weight,
     get_random_philosopher,
     is_accepted_record,
     is_rejected_record,
 )
-from database_schema import make_empty_database_entry
+from wiki_philosopher_bot.database_schema import make_empty_database_entry
 
 
 def database_with_quotes(

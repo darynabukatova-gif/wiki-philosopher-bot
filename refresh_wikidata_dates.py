@@ -7,7 +7,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from cache import DatabaseBackupResult, create_database_backup, load_database, update_database_entry
-from config import (
+from wiki_philosopher_bot.config import (
     CANONICAL_DATA_FOLDER,
     DATABASE_FILE,
     RATE_LIMIT,
@@ -15,9 +15,9 @@ from config import (
     DATABASE_BACKUP_FOLDER,
     OPERATIONAL_BACKUP_RETENTION_DAYS,
 )
-from run_reporting import save_wikidata_date_refresh_report
-from runtime import persistence_lock
-from utils import RateLimiter, chunk_list
+from wiki_philosopher_bot.run_reporting import save_wikidata_date_refresh_report
+from wiki_philosopher_bot.runtime import persistence_lock
+from wiki_philosopher_bot.utils import RateLimiter, chunk_list
 from wikipedia_api import (
     get_wikidata_entities_batch,
     get_wikidata_time_claim_value,

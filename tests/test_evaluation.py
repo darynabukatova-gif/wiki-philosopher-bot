@@ -3,12 +3,12 @@ import copy
 import pytest
 import cache
 import evaluation
-from database_schema import (
+from wiki_philosopher_bot.database_schema import (
     make_empty_database_entry,
     serialize_database_entries,
     validate_database_entry,
 )
-from config import CURRENT_EVALUATION_ALGORITHM_VERSION
+from wiki_philosopher_bot.config import CURRENT_EVALUATION_ALGORITHM_VERSION
 
 
 def write_canonical_database(tmp_path, entries):

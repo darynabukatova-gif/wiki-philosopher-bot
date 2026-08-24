@@ -4,7 +4,7 @@ import math
 import time
 import random
 import threading
-from config import (
+from wiki_philosopher_bot.config import (
     MAX_BACKOFF, 
     INITIAL_BACKOFF, 
     EXCLUDE_RE_TITLE, 

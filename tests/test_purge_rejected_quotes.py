@@ -5,7 +5,7 @@ import threading
 import pytest
 
 import purge_rejected_quotes
-from database_schema import make_empty_database_entry, serialize_database_entries
+from wiki_philosopher_bot.database_schema import make_empty_database_entry, serialize_database_entries
 
 
 def rejected_entry(title, posted=False, quote_count=1):

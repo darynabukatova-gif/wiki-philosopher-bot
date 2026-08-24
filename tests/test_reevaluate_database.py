@@ -11,8 +11,8 @@ import evaluation
 import main
 import reevaluate_database
 import wikipedia_api
-from config import CURRENT_EVALUATION_ALGORITHM_VERSION
-from database_schema import (
+from wiki_philosopher_bot.config import CURRENT_EVALUATION_ALGORITHM_VERSION
+from wiki_philosopher_bot.database_schema import (
     make_empty_database_entry,
     serialize_database_entries,
 )

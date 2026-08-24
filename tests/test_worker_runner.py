@@ -1,6 +1,6 @@
 import pytest
 from concurrent.futures import Future
-from worker_runner import process_completed_futures
+from wiki_philosopher_bot.worker_runner import process_completed_futures
 
 def completed_future(value):
     future = Future()

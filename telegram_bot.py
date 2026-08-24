@@ -1,7 +1,7 @@
 import requests
 from typing import Optional
 from dataclasses import dataclass
-from config import get_telegram_settings, REQUEST_TIMEOUT
+from wiki_philosopher_bot.config import get_telegram_settings, REQUEST_TIMEOUT
 
 @dataclass
 class TelegramResult:

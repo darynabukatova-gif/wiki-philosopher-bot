@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 
 import cache
 import check_recent_deaths
-import config
+import wiki_philosopher_bot.config as config
 import main
 import migration
 import purge_rejected_quotes

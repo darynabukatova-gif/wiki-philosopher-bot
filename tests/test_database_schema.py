@@ -1,4 +1,4 @@
-import database_schema
+import wiki_philosopher_bot.database_schema as database_schema
 import pytest
 
 from migrate_database import (
@@ -10,7 +10,7 @@ from migrate_database import (
     source_value,
 )
 
-from config import (
+from wiki_philosopher_bot.config import (
     CURRENT_EVALUATION_ALGORITHM_VERSION,
     ENTITY_FILE,
     POSTED_FILE,
@@ -227,7 +227,7 @@ def test_schema_validator_requires_rejected_evaluation_for_purged_quotes():
 
 
 def test_schema_validator_requires_structured_quote_items_for_current_parser_version():
-    from config import CURRENT_QUOTE_PARSER_VERSION
+    from wiki_philosopher_bot.config import CURRENT_QUOTE_PARSER_VERSION
 
     entry = make_empty_database_entry("Ada Lovelace")
     entry["quotes"].update({
@@ -248,7 +248,7 @@ def test_schema_validator_requires_structured_quote_items_for_current_parser_ver
 
 
 def test_schema_validator_accepts_complete_current_parser_quote_item():
-    from config import CURRENT_QUOTE_PARSER_VERSION
+    from wiki_philosopher_bot.config import CURRENT_QUOTE_PARSER_VERSION
 
     entry = make_empty_database_entry("Ada Lovelace")
     entry["quotes"].update({

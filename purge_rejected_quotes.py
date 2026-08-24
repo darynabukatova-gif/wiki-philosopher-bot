@@ -7,9 +7,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from cache import DatabaseBackupResult, create_database_backup, load_database, update_database_entry
-from config import CANONICAL_DATA_FOLDER, DATABASE_FILE, PURGE_REPORT_FOLDER, DATABASE_BACKUP_FOLDER, OPERATIONAL_BACKUP_RETENTION_DAYS
-from run_reporting import save_purge_report
-from runtime import persistence_lock
+from wiki_philosopher_bot.config import CANONICAL_DATA_FOLDER, DATABASE_FILE, PURGE_REPORT_FOLDER, DATABASE_BACKUP_FOLDER, OPERATIONAL_BACKUP_RETENTION_DAYS
+from wiki_philosopher_bot.run_reporting import save_purge_report
+from wiki_philosopher_bot.runtime import persistence_lock
 
 
 PURGE_REPORTS_DIRECTORY = Path(PURGE_REPORT_FOLDER)

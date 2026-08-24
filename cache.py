@@ -8,14 +8,14 @@ from pathlib import Path
 from datetime import datetime, timezone
 from dataclasses import dataclass, field
 from typing import List, Optional
-from database_schema import (
+from wiki_philosopher_bot.database_schema import (
     make_empty_database_entry,
     serialize_database_entries,
     validate_database_dataset,
     validate_database_entry,
 )
-from utils import get_data_path
-from config import DATABASE_BACKUP_FOLDER, OPERATIONAL_BACKUP_RETENTION_DAYS
+from wiki_philosopher_bot.utils import get_data_path
+from wiki_philosopher_bot.config import DATABASE_BACKUP_FOLDER, OPERATIONAL_BACKUP_RETENTION_DAYS
 
 
 BACKUP_METADATA_SCHEMA_VERSION = 1

@@ -6,17 +6,17 @@ import hashlib
 import tempfile
 import argparse
 from pathlib import Path
-from utils import clean_title
+from wiki_philosopher_bot.utils import clean_title
 from dataclasses import dataclass
 from typing import Dict, Iterable, List, Optional, Tuple, Set
-from database_schema import (
+from wiki_philosopher_bot.database_schema import (
     DATABASE_SCHEMA_VERSION,
     make_empty_database_entry,
     serialize_database_entries,
     validate_database_dataset,
     validate_database_entry,
 )
-from config import (
+from wiki_philosopher_bot.config import (
     DATABASE_FILE,
     ENTITY_FILE,
     POSTED_FILE,

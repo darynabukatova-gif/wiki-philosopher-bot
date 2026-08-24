@@ -11,12 +11,12 @@ from bs4 import BeautifulSoup
 from urllib.parse import quote, urljoin
 from dataclasses import dataclass
 from cache import update_database_entry
-from utils import (
+from wiki_philosopher_bot.utils import (
     chunk_list, 
     calculate_backoff, 
     is_bad_quote,
 )
-from config import (
+from wiki_philosopher_bot.config import (
     DATABASE_FILE,
     INITIAL_BACKOFF, 
     MAX_BACKOFF, 

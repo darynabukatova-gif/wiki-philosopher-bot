@@ -3,8 +3,8 @@ import json
 import pytest
 
 import refresh_quotes
-from config import CURRENT_QUOTE_PARSER_VERSION
-from database_schema import make_empty_database_entry, serialize_database_entries
+from wiki_philosopher_bot.config import CURRENT_QUOTE_PARSER_VERSION
+from wiki_philosopher_bot.database_schema import make_empty_database_entry, serialize_database_entries
 
 
 def write_database(tmp_path, entries):

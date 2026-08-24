@@ -11,14 +11,14 @@ from pathlib import Path
 from unittest.mock import patch
 
 from cache import load_database
-from config import (
+from wiki_philosopher_bot.config import (
     CURRENT_EVALUATION_ALGORITHM_VERSION,
     CURRENT_QUOTE_PARSER_VERSION,
     CANONICAL_DATA_FOLDER,
     DATABASE_FILE,
 )
 import evaluation
-from utils import candidate_selection_weight
+from wiki_philosopher_bot.utils import candidate_selection_weight
 from wikipedia_api import quote_selection_weight
 
 

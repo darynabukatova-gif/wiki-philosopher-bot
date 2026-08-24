@@ -12,7 +12,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
 
-from config import (
+from wiki_philosopher_bot.config import (
     LEGACY_DATA_FOLDER,
     ENTITY_FILE,
     POSTED_FILE,

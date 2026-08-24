@@ -1,8 +1,8 @@
 from html import escape
 import re
 
-from utils import clean_title
-from config import MAX_QUOTES
+from wiki_philosopher_bot.utils import clean_title
+from wiki_philosopher_bot.config import MAX_QUOTES
 from wikipedia_api import get_random_quote
 
 

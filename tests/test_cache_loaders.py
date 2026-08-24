@@ -1,7 +1,7 @@
 import json
 import cache
 import pytest
-from database_schema import make_empty_database_entry, serialize_database_entries
+from wiki_philosopher_bot.database_schema import make_empty_database_entry, serialize_database_entries
 
 
 def write_canonical_database(tmp_path, entries):

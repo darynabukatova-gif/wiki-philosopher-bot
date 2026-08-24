@@ -6,7 +6,7 @@ import pytest
 
 import refresh_wikidata_dates
 import wikipedia_api
-from database_schema import make_empty_database_entry, serialize_database_entries
+from wiki_philosopher_bot.database_schema import make_empty_database_entry, serialize_database_entries
 
 
 def date_entry(title, birth=650, death=548, qid="Q1"):

@@ -9,13 +9,13 @@ import cache
 import evaluation
 import main
 import pytest
-import utils
+import wiki_philosopher_bot.utils as utils
 import wikipedia_api
-from config import (
+from wiki_philosopher_bot.config import (
     CURRENT_EVALUATION_ALGORITHM_VERSION,
     CURRENT_QUOTE_PARSER_VERSION,
 )
-from database_schema import make_empty_database_entry, serialize_database_entries
+from wiki_philosopher_bot.database_schema import make_empty_database_entry, serialize_database_entries
 
 
 def quote_item(text):

@@ -3,8 +3,8 @@ import threading
 import pytest
 
 import presentation
-from config import MAX_QUOTES
-from database_schema import make_empty_database_entry
+from wiki_philosopher_bot.config import MAX_QUOTES
+from wiki_philosopher_bot.database_schema import make_empty_database_entry
 
 
 @pytest.mark.parametrize(

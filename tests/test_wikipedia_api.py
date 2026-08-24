@@ -5,8 +5,8 @@ import pytest
 import requests
 import threading
 import wikipedia_api
-from config import CURRENT_QUOTE_PARSER_VERSION
-from database_schema import (
+from wiki_philosopher_bot.config import CURRENT_QUOTE_PARSER_VERSION
+from wiki_philosopher_bot.database_schema import (
     make_empty_database_entry,
     serialize_database_entries,
 )
@@ -3326,7 +3326,7 @@ def test_current_parser_keeps_unstructured_citation_and_sourceless_quote_valid()
 
 
 def test_get_quotes_current_parser_available_cache_is_authoritative(monkeypatch):
-    from config import CURRENT_QUOTE_PARSER_VERSION
+    from wiki_philosopher_bot.config import CURRENT_QUOTE_PARSER_VERSION
 
     quote_item = current_parser_quote(SECTION_QUOTE)
     database = canonical_quote_database("Ada", status="available", items=[quote_item])
@@ -3381,7 +3381,7 @@ def test_stale_ernst_mach_refresh_replaces_false_commentary_and_sets_parser_vers
     monkeypatch,
     tmp_path,
 ):
-    from config import CURRENT_QUOTE_PARSER_VERSION
+    from wiki_philosopher_bot.config import CURRENT_QUOTE_PARSER_VERSION
 
     false_text = (
         "Some Machians were sufficiently impressed by Einstein's interpretations "
@@ -3495,7 +3495,7 @@ def test_stale_quote_refresh_successful_zero_result_becomes_current_not_found(
     monkeypatch,
     tmp_path,
 ):
-    from config import CURRENT_QUOTE_PARSER_VERSION
+    from wiki_philosopher_bot.config import CURRENT_QUOTE_PARSER_VERSION
 
     entry = make_empty_database_entry("Ada")
     entry["quotes"].update({
@@ -3530,7 +3530,7 @@ def test_current_parser_extracts_nested_attribution_without_adding_it_to_quote_t
     monkeypatch,
     tmp_path,
 ):
-    from config import CURRENT_QUOTE_PARSER_VERSION
+    from wiki_philosopher_bot.config import CURRENT_QUOTE_PARSER_VERSION
 
     quote_text = SECTION_QUOTE
     citation = "The Analysis of Sensations (1886), Ch. 2"

@@ -1,7 +1,7 @@
 import pytest
 import evaluation
 import migrate_database
-from config import (
+from wiki_philosopher_bot.config import (
     PROCESSED_FILE,
     QUOTE_FILE,
     RESULT_FILE,

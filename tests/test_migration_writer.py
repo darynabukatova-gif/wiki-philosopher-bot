@@ -4,7 +4,7 @@ import json
 import pytest
 
 import migrate_database
-from database_schema import serialize_database_entries
+from wiki_philosopher_bot.database_schema import serialize_database_entries
 from migrate_database import make_empty_database_entry
 
 

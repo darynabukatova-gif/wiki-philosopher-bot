@@ -6,7 +6,7 @@ import pytest
 
 import check_recent_deaths
 import wikipedia_api
-from database_schema import make_empty_database_entry, serialize_database_entries
+from wiki_philosopher_bot.database_schema import make_empty_database_entry, serialize_database_entries
 from telegram_bot import TelegramResult
 
 

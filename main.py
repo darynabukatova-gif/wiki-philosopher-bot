@@ -7,11 +7,11 @@ from evaluation import (
     process_title,
 )
 from telegram_bot import send_message
-from runtime import stats_lock, persistence_lock
+from wiki_philosopher_bot.runtime import stats_lock, persistence_lock
 from concurrent.futures import ThreadPoolExecutor
-from worker_runner import process_completed_futures
+from wiki_philosopher_bot.worker_runner import process_completed_futures
 from presentation import format_philosopher_message
-from utils import RateLimiter, get_random_philosopher
+from wiki_philosopher_bot.utils import RateLimiter, get_random_philosopher
 from wikipedia_api import (
     build_entity_cache,
     build_page_properties_cache,
@@ -21,7 +21,7 @@ from cache import (
     load_database,
     update_database_entry,
 )
-from config import (
+from wiki_philosopher_bot.config import (
     DATABASE_FILE,
     CANONICAL_DATA_FOLDER,
     MAX_QUOTES, 
@@ -31,7 +31,7 @@ from config import (
     load_environment,
     RUN_REPORT_FOLDER,
 )
-from run_reporting import (
+from wiki_philosopher_bot.run_reporting import (
     build_run_report,
     capture_run_baseline,
     format_run_summary,

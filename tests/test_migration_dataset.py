@@ -1,6 +1,6 @@
 import migration
 import migrate_database
-from config import (
+from wiki_philosopher_bot.config import (
     ENTITY_FILE,
     POSTED_FILE,
     PROCESSED_FILE,

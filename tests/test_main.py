@@ -6,11 +6,11 @@ import threading
 import cache
 import evaluation
 import wikipedia_api
-from config import (
+from wiki_philosopher_bot.config import (
     CURRENT_EVALUATION_ALGORITHM_VERSION,
     CURRENT_QUOTE_PARSER_VERSION,
 )
-from database_schema import (
+from wiki_philosopher_bot.database_schema import (
     make_empty_database_entry,
     serialize_database_entries,
 )

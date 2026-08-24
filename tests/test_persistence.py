@@ -2,7 +2,7 @@ import json
 import cache
 import pytest
 import threading
-from runtime import persistence_lock, stats_lock
+from wiki_philosopher_bot.runtime import persistence_lock, stats_lock
 from concurrent.futures import ThreadPoolExecutor
 
 def test_runtime_exposes_separate_persistence_and_stats_locks():

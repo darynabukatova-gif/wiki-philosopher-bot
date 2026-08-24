@@ -4,15 +4,15 @@ import argparse
 import json
 
 from cache import DatabaseBackupResult, create_database_backup, load_database
-from config import CANONICAL_DATA_FOLDER, DATABASE_FILE, RATE_LIMIT, DATABASE_BACKUP_FOLDER, OPERATIONAL_BACKUP_RETENTION_DAYS
+from wiki_philosopher_bot.config import CANONICAL_DATA_FOLDER, DATABASE_FILE, RATE_LIMIT, DATABASE_BACKUP_FOLDER, OPERATIONAL_BACKUP_RETENTION_DAYS
 from evaluation import (
     evaluation_needs_processing,
     persist_canonical_evaluation,
     process_title,
 )
 from main import build_entity_lookup, make_initial_stats
-from runtime import persistence_lock, stats_lock
-from utils import RateLimiter
+from wiki_philosopher_bot.runtime import persistence_lock, stats_lock
+from wiki_philosopher_bot.utils import RateLimiter
 
 
 SAMPLE_SIZE = 10
