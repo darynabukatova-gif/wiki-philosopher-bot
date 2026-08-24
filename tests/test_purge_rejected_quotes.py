@@ -4,7 +4,7 @@ import threading
 
 import pytest
 
-import purge_rejected_quotes
+import wiki_philosopher_bot.cli.purge_rejected_quotes as purge_rejected_quotes
 from wiki_philosopher_bot.database_schema import make_empty_database_entry, serialize_database_entries
 
 

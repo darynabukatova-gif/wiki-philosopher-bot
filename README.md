@@ -55,7 +55,7 @@ Do not commit `.env`.
 Run the normal bot with:
 
 ```bash
-python3 main.py
+python3 -m wiki_philosopher_bot
 ```
 
 ## Tests
@@ -66,18 +66,24 @@ python3 main.py
 
 ## Maintenance commands
 
-The project includes:
+The installed console commands are:
 
-- `backup_database.py`
-- `refresh_quotes.py`
-- `refresh_wikidata_dates.py`
-- `check_recent_deaths.py`
-- `reevaluate_database.py`
-- `purge_rejected_quotes.py`
+- `wiki-philosopher-backup`
+- `wiki-philosopher-refresh-quotes`
+- `wiki-philosopher-refresh-wikidata-dates`
+- `wiki-philosopher-check-recent-deaths`
+- `wiki-philosopher-reevaluate`
+- `wiki-philosopher-purge-rejected-quotes`
 
 Where supported, run `--dry-run` first and use `--apply` only after reviewing
 the result. Dangerous maintenance applies create one verified pre-apply
 database backup automatically.
+
+Compatibility wrappers remain available under `scripts/`, for example:
+
+```bash
+python3 scripts/refresh_quotes.py --dry-run
+```
 
 ## Data and generated files
 

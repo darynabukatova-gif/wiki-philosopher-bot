@@ -22,11 +22,11 @@ def isolate_maintenance_backups(monkeypatch, tmp_path):
         )
 
     for name in (
-        "refresh_quotes",
-        "refresh_wikidata_dates",
-        "check_recent_deaths",
-        "purge_rejected_quotes",
-        "reevaluate_database",
+        "wiki_philosopher_bot.cli.refresh_quotes",
+        "wiki_philosopher_bot.cli.refresh_wikidata_dates",
+        "wiki_philosopher_bot.cli.check_recent_deaths",
+        "wiki_philosopher_bot.cli.purge_rejected_quotes",
+        "wiki_philosopher_bot.cli.reevaluate_database",
     ):
         module = sys.modules.get(name)
         if module is not None:

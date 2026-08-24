@@ -6,7 +6,7 @@ import sys
 
 import pytest
 
-import migrate_database
+import wiki_philosopher_bot.cli.migrate_database as migrate_database
 from wiki_philosopher_bot.config import (
     ENTITY_FILE,
     POSTED_FILE,
@@ -16,7 +16,7 @@ from wiki_philosopher_bot.config import (
     RESULT_FILE,
     SUMMARY_FILE,
 )
-from migrate_database import SOURCE_ORDER, make_empty_database_entry
+from wiki_philosopher_bot.cli.migrate_database import SOURCE_ORDER, make_empty_database_entry
 
 
 def sha256_bytes(data):

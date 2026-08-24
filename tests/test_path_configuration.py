@@ -2,13 +2,13 @@ from pathlib import Path
 from datetime import datetime, timezone
 
 import wiki_philosopher_bot.cache as cache
-import check_recent_deaths
+import wiki_philosopher_bot.cli.check_recent_deaths as check_recent_deaths
 import wiki_philosopher_bot.config as config
 import wiki_philosopher_bot.main as main
 import wiki_philosopher_bot.migration as migration
-import purge_rejected_quotes
-import refresh_quotes
-import refresh_wikidata_dates
+import wiki_philosopher_bot.cli.purge_rejected_quotes as purge_rejected_quotes
+import wiki_philosopher_bot.cli.refresh_quotes as refresh_quotes
+import wiki_philosopher_bot.cli.refresh_wikidata_dates as refresh_wikidata_dates
 
 
 def test_repository_storage_paths_are_separated_and_used_by_callers():

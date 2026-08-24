@@ -1,5 +1,5 @@
 import wiki_philosopher_bot.migration as migration
-import migrate_database
+import wiki_philosopher_bot.cli.migrate_database as migrate_database
 from wiki_philosopher_bot.config import (
     ENTITY_FILE,
     POSTED_FILE,
@@ -9,7 +9,7 @@ from wiki_philosopher_bot.config import (
     RESULT_FILE,
     SUMMARY_FILE,
 )
-from migrate_database import (
+from wiki_philosopher_bot.cli.migrate_database import (
     FileFingerprint,
     SOURCE_ORDER,
     make_empty_database_entry,

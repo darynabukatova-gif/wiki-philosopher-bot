@@ -18,7 +18,7 @@ from wiki_philosopher_bot.config import (
     get_recent_death_telegram_settings,
     load_environment,
 )
-from refresh_wikidata_dates import detect_recent_death_update
+from wiki_philosopher_bot.cli.refresh_wikidata_dates import detect_recent_death_update
 from wiki_philosopher_bot.run_reporting import save_recent_death_report
 from wiki_philosopher_bot.runtime import persistence_lock
 from wiki_philosopher_bot.telegram_bot import send_message_to_chat

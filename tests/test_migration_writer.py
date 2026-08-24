@@ -3,9 +3,9 @@ import json
 
 import pytest
 
-import migrate_database
+import wiki_philosopher_bot.cli.migrate_database as migrate_database
 from wiki_philosopher_bot.database_schema import serialize_database_entries
-from migrate_database import make_empty_database_entry
+from wiki_philosopher_bot.cli.migrate_database import make_empty_database_entry
 
 
 def make_valid_entries_in_reverse_order():

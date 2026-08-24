@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-import refresh_quotes
+import wiki_philosopher_bot.cli.refresh_quotes as refresh_quotes
 from wiki_philosopher_bot.config import CURRENT_QUOTE_PARSER_VERSION
 from wiki_philosopher_bot.database_schema import make_empty_database_entry, serialize_database_entries
 

@@ -1,7 +1,7 @@
 import stat
 import hashlib
 
-from migrate_database import (
+from wiki_philosopher_bot.cli.migrate_database import (
     FileFingerprint,
     fingerprint_file,
     parse_backup_manifest,

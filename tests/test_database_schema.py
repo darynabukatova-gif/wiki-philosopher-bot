@@ -1,7 +1,7 @@
 import wiki_philosopher_bot.database_schema as database_schema
 import pytest
 
-from migrate_database import (
+from wiki_philosopher_bot.cli.migrate_database import (
     make_empty_database_entry, 
     validate_database_entry, 
     validate_database_dataset, 

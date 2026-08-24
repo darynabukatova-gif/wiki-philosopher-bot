@@ -21,6 +21,17 @@ dev = [
     "matplotlib>=3.5,<3.8",
 ]
 
+[project.scripts]
+wiki-philosopher-bot = "wiki_philosopher_bot.main:main"
+wiki-philosopher-analyze = "wiki_philosopher_bot.cli.analyze_database:main"
+wiki-philosopher-backup = "wiki_philosopher_bot.cli.backup_database:main"
+wiki-philosopher-check-recent-deaths = "wiki_philosopher_bot.cli.check_recent_deaths:main"
+wiki-philosopher-migrate = "wiki_philosopher_bot.cli.migrate_database:main"
+wiki-philosopher-purge-rejected-quotes = "wiki_philosopher_bot.cli.purge_rejected_quotes:main"
+wiki-philosopher-reevaluate = "wiki_philosopher_bot.cli.reevaluate_database:main"
+wiki-philosopher-refresh-quotes = "wiki_philosopher_bot.cli.refresh_quotes:main"
+wiki-philosopher-refresh-wikidata-dates = "wiki_philosopher_bot.cli.refresh_wikidata_dates:main"
+
 [tool.setuptools]
 package-dir = {"" = "src"}
 

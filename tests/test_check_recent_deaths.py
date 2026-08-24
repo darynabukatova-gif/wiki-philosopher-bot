@@ -4,7 +4,7 @@ from datetime import date
 
 import pytest
 
-import check_recent_deaths
+import wiki_philosopher_bot.cli.check_recent_deaths as check_recent_deaths
 import wiki_philosopher_bot.wikipedia_api as wikipedia_api
 from wiki_philosopher_bot.database_schema import make_empty_database_entry, serialize_database_entries
 from wiki_philosopher_bot.telegram_bot import TelegramResult

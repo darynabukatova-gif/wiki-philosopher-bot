@@ -21,7 +21,7 @@ snapshots live in `backups/migration/`; in particular,
 
 Create a preserved manual checkpoint with:
 
-    python backup_database.py --label before-major-change
+    wiki-philosopher-backup --label before-major-change
 
 Manual checkpoints are byte-for-byte copies in `backups/database/` with a
 metadata sidecar and are preserved indefinitely. Dangerous maintenance
@@ -31,7 +31,9 @@ non-preserved operational backups older than 90 days. Historical snapshots and
 migration backups are never automatically pruned. A backup failure aborts the
 maintenance apply before canonical mutation; dry-runs create no backup.
 
-Normal `main.py` bot runs intentionally do not create per-run snapshots.
+Normal `python -m wiki_philosopher_bot` bot runs intentionally do not create
+per-run snapshots. The legacy-compatible maintenance launchers live under
+`scripts/`; installed commands use the `wiki-philosopher-*` names.
 
 Each canonical entry owns identity fields plus `summary`, `wikidata`,
 `quotes`, `evaluation`, `posting`, and `migration` provenance/conflicts.

@@ -4,7 +4,7 @@ from datetime import date
 
 import pytest
 
-import refresh_wikidata_dates
+import wiki_philosopher_bot.cli.refresh_wikidata_dates as refresh_wikidata_dates
 import wiki_philosopher_bot.wikipedia_api as wikipedia_api
 from wiki_philosopher_bot.database_schema import make_empty_database_entry, serialize_database_entries
 

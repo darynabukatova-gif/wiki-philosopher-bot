@@ -1,6 +1,6 @@
 import pytest
 import wiki_philosopher_bot.evaluation as evaluation
-import migrate_database
+import wiki_philosopher_bot.cli.migrate_database as migrate_database
 from wiki_philosopher_bot.config import (
     PROCESSED_FILE,
     QUOTE_FILE,

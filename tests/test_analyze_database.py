@@ -4,7 +4,7 @@ import importlib.util
 import json
 from pathlib import Path
 
-import analyze_database
+import wiki_philosopher_bot.cli.analyze_database as analyze_database
 import wiki_philosopher_bot.cache as cache
 import wiki_philosopher_bot.evaluation as evaluation
 import wiki_philosopher_bot.main as main

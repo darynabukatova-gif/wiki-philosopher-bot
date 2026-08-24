@@ -2,8 +2,8 @@ import sys
 import copy
 import pytest
 import importlib
-import migrate_database
-from migrate_database import (
+import wiki_philosopher_bot.cli.migrate_database as migrate_database
+from wiki_philosopher_bot.cli.migrate_database import (
     SOURCE_ORDER,
     build_title_index,
     make_empty_database_entry,
@@ -25,11 +25,10 @@ def test_importing_writable_migration_module_has_no_side_effects(
 ):
     before = list(tmp_path.iterdir())
 
-    sys.modules.pop("migrate_database", None)
+    module_name = "wiki_philosopher_bot.cli.migrate_database"
+    sys.modules.pop(module_name, None)
 
-    module = importlib.import_module(
-        "migrate_database"
-    )
+    module = importlib.import_module(module_name)
 
     after = list(tmp_path.iterdir())
 

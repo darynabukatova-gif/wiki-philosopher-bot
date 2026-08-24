@@ -8,7 +8,7 @@ import pytest
 
 import wiki_philosopher_bot.cache as cache
 import wiki_philosopher_bot.database_schema as database_schema
-from migrate_database import make_empty_database_entry
+from wiki_philosopher_bot.cli.migrate_database import make_empty_database_entry
 
 
 def database_path(tmp_path):
