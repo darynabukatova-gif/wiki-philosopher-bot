@@ -26,7 +26,7 @@ from wiki_philosopher_bot.config import (
     RESULT_FILE,
     SUMMARY_FILE,
 )
-from migration import (
+from wiki_philosopher_bot.migration import (
     count_legacy_records,
     read_legacy_sources,
     report_conflicts,

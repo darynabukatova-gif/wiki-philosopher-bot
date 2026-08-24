@@ -1,4 +1,4 @@
-import migration
+import wiki_philosopher_bot.migration as migration
 import migrate_database
 from wiki_philosopher_bot.config import (
     ENTITY_FILE,

@@ -10,7 +10,7 @@ from wiki_philosopher_bot.evaluation import (
     persist_canonical_evaluation,
     process_title,
 )
-from main import build_entity_lookup, make_initial_stats
+from wiki_philosopher_bot.main import build_entity_lookup, make_initial_stats
 from wiki_philosopher_bot.runtime import persistence_lock, stats_lock
 from wiki_philosopher_bot.utils import RateLimiter
 

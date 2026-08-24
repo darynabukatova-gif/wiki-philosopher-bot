@@ -4,8 +4,8 @@ from datetime import datetime, timezone
 import wiki_philosopher_bot.cache as cache
 import check_recent_deaths
 import wiki_philosopher_bot.config as config
-import main
-import migration
+import wiki_philosopher_bot.main as main
+import wiki_philosopher_bot.migration as migration
 import purge_rejected_quotes
 import refresh_quotes
 import refresh_wikidata_dates

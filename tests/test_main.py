@@ -1,6 +1,6 @@
 import copy
 import json
-import main
+import wiki_philosopher_bot.main as main
 import pytest
 import threading
 import wiki_philosopher_bot.cache as cache
@@ -47,7 +47,7 @@ def make_postable_entry(title):
 
 
 def test_main_returns_zero_when_no_candidate(monkeypatch):
-    import main
+    import wiki_philosopher_bot.main as main
 
     state = main.RuntimeState(
         database={},

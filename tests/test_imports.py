@@ -31,9 +31,10 @@ def test_importing_main_has_no_application_side_effects(monkeypatch: pytest.Monk
     monkeypatch.setattr(telegram_bot, "send_message", forbidden)
     monkeypatch.setattr(futures, "ThreadPoolExecutor", forbidden)
 
-    sys.modules.pop("main", None)
+    module_name = "wiki_philosopher_bot.main"
+    sys.modules.pop(module_name, None)
 
-    module = importlib.import_module("main")
+    module = importlib.import_module(module_name)
 
     assert callable(module.main)
     assert callable(module.load_runtime_state)
@@ -45,7 +46,7 @@ def test_importing_main_does_not_load_dotenv():
         (
             "import dotenv",
             "dotenv.load_dotenv = lambda: (_ for _ in ()).throw(AssertionError('dotenv loaded'))",
-            "import main",
+                "import wiki_philosopher_bot.main",
         )
     )
 
@@ -58,3 +59,10 @@ def test_importing_main_does_not_load_dotenv():
     )
 
     assert result.returncode == 0, result.stderr
+
+
+def test_package_main_module_delegates_to_application_main():
+    import wiki_philosopher_bot.__main__ as package_entry
+    import wiki_philosopher_bot.main as application_main
+
+    assert package_entry.main is application_main.main

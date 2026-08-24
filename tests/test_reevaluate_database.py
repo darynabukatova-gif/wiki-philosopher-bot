@@ -8,7 +8,7 @@ import pytest
 
 import wiki_philosopher_bot.cache as cache
 import wiki_philosopher_bot.evaluation as evaluation
-import main
+import wiki_philosopher_bot.main as main
 import reevaluate_database
 import wiki_philosopher_bot.wikipedia_api as wikipedia_api
 from wiki_philosopher_bot.config import CURRENT_EVALUATION_ALGORITHM_VERSION

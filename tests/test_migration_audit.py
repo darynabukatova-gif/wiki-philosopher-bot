@@ -1,4 +1,4 @@
-import migration
+import wiki_philosopher_bot.migration as migration
 
 def test_migration_audit_is_read_only_and_reports_conflicts(
     legacy_source_dir,

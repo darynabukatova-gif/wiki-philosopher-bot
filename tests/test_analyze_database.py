@@ -7,7 +7,7 @@ from pathlib import Path
 import analyze_database
 import wiki_philosopher_bot.cache as cache
 import wiki_philosopher_bot.evaluation as evaluation
-import main
+import wiki_philosopher_bot.main as main
 import pytest
 import wiki_philosopher_bot.utils as utils
 import wiki_philosopher_bot.wikipedia_api as wikipedia_api
