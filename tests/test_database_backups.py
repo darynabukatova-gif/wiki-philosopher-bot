@@ -2,7 +2,7 @@ import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-import cache
+import wiki_philosopher_bot.cache as cache
 
 
 def write_database(tmp_path, content=b'{"title":"Ada"}\n'):

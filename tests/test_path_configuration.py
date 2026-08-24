@@ -1,7 +1,7 @@
 from pathlib import Path
 from datetime import datetime, timezone
 
-import cache
+import wiki_philosopher_bot.cache as cache
 import check_recent_deaths
 import wiki_philosopher_bot.config as config
 import main

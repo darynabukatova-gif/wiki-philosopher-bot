@@ -8,7 +8,7 @@ from pathlib import Path
 @pytest.fixture(autouse=True)
 def isolate_maintenance_backups(monkeypatch, tmp_path):
     """Never allow command tests to create a backup in the real repository."""
-    from cache import DatabaseBackupResult
+    from wiki_philosopher_bot.cache import DatabaseBackupResult
 
     def fake_backup(*args, **kwargs):
         return DatabaseBackupResult(

@@ -7,7 +7,7 @@ import time
 from datetime import date, datetime, timezone
 from pathlib import Path
 
-from cache import DatabaseBackupResult, create_database_backup, load_database, update_database_entry
+from wiki_philosopher_bot.cache import DatabaseBackupResult, create_database_backup, load_database, update_database_entry
 from wiki_philosopher_bot.config import (
     CANONICAL_DATA_FOLDER,
     DATABASE_FILE,
@@ -21,9 +21,9 @@ from wiki_philosopher_bot.config import (
 from refresh_wikidata_dates import detect_recent_death_update
 from wiki_philosopher_bot.run_reporting import save_recent_death_report
 from wiki_philosopher_bot.runtime import persistence_lock
-from telegram_bot import send_message_to_chat
+from wiki_philosopher_bot.telegram_bot import send_message_to_chat
 from wiki_philosopher_bot.utils import RateLimiter, chunk_list
-from wikipedia_api import (
+from wiki_philosopher_bot.wikipedia_api import (
     get_wikidata_entities_batch,
     get_wikidata_time_claim_value,
     parse_wikidata_time_claim_exact_date,

@@ -6,7 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-import cache
+import wiki_philosopher_bot.cache as cache
 import wiki_philosopher_bot.database_schema as database_schema
 from migrate_database import make_empty_database_entry
 

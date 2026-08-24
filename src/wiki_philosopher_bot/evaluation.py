@@ -3,14 +3,14 @@ import time
 import unicodedata
 from typing import List
 from dataclasses import dataclass, field
-from cache import update_database_entry
+from wiki_philosopher_bot.cache import update_database_entry
 from wiki_philosopher_bot.config import (
     CURRENT_EVALUATION_ALGORITHM_VERSION,
     DATABASE_FILE,
     MAX_QUOTES, 
     NON_HUMAN_PATTERNS,
 )
-from wikipedia_api import (
+from wiki_philosopher_bot.wikipedia_api import (
     get_entity_cached, 
     get_instances, 
     get_occupations, 

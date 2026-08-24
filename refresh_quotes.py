@@ -6,7 +6,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from cache import DatabaseBackupResult, create_database_backup, load_database
+from wiki_philosopher_bot.cache import DatabaseBackupResult, create_database_backup, load_database
 from wiki_philosopher_bot.config import (
     CURRENT_QUOTE_PARSER_VERSION,
     CANONICAL_DATA_FOLDER,
@@ -19,7 +19,7 @@ from wiki_philosopher_bot.config import (
 from wiki_philosopher_bot.runtime import persistence_lock, stats_lock
 from wiki_philosopher_bot.run_reporting import save_refresh_report
 from wiki_philosopher_bot.utils import RateLimiter
-from wikipedia_api import get_quotes
+from wiki_philosopher_bot.wikipedia_api import get_quotes
 
 
 REFRESH_REPORTS_DIRECTORY = Path(QUOTE_REFRESH_REPORT_FOLDER)

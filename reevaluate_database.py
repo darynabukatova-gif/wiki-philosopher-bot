@@ -3,9 +3,9 @@
 import argparse
 import json
 
-from cache import DatabaseBackupResult, create_database_backup, load_database
+from wiki_philosopher_bot.cache import DatabaseBackupResult, create_database_backup, load_database
 from wiki_philosopher_bot.config import CANONICAL_DATA_FOLDER, DATABASE_FILE, RATE_LIMIT, DATABASE_BACKUP_FOLDER, OPERATIONAL_BACKUP_RETENTION_DAYS
-from evaluation import (
+from wiki_philosopher_bot.evaluation import (
     evaluation_needs_processing,
     persist_canonical_evaluation,
     process_title,

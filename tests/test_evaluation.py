@@ -1,8 +1,8 @@
 import threading
 import copy
 import pytest
-import cache
-import evaluation
+import wiki_philosopher_bot.cache as cache
+import wiki_philosopher_bot.evaluation as evaluation
 from wiki_philosopher_bot.database_schema import (
     make_empty_database_entry,
     serialize_database_entries,

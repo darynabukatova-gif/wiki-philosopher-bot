@@ -1,5 +1,5 @@
 import json
-import cache
+import wiki_philosopher_bot.cache as cache
 import pytest
 from wiki_philosopher_bot.database_schema import make_empty_database_entry, serialize_database_entries
 
@@ -113,7 +113,7 @@ def test_loaded_legacy_and_fetched_current_quotes_keep_their_versioned_shapes(
 ):
     import threading
 
-    import wikipedia_api
+    import wiki_philosopher_bot.wikipedia_api as wikipedia_api
 
     title = "Ada Lovelace"
     quote_text = (

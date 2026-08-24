@@ -1,6 +1,6 @@
 import requests
 import pytest
-import telegram_bot
+import wiki_philosopher_bot.telegram_bot as telegram_bot
 
 class FakeTelegramResponse:
     def __init__(self, payload=None, http_error=None, json_error=None):

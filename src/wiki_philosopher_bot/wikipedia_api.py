@@ -10,7 +10,7 @@ from typing import Optional
 from bs4 import BeautifulSoup
 from urllib.parse import quote, urljoin
 from dataclasses import dataclass
-from cache import update_database_entry
+from wiki_philosopher_bot.cache import update_database_entry
 from wiki_philosopher_bot.utils import (
     chunk_list, 
     calculate_backoff, 

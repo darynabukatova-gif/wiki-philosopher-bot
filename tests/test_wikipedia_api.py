@@ -4,7 +4,7 @@ import math
 import pytest
 import requests
 import threading
-import wikipedia_api
+import wiki_philosopher_bot.wikipedia_api as wikipedia_api
 from wiki_philosopher_bot.config import CURRENT_QUOTE_PARSER_VERSION
 from wiki_philosopher_bot.database_schema import (
     make_empty_database_entry,

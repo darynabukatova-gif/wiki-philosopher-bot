@@ -1,5 +1,5 @@
 import pytest
-import evaluation
+import wiki_philosopher_bot.evaluation as evaluation
 import migrate_database
 from wiki_philosopher_bot.config import (
     PROCESSED_FILE,

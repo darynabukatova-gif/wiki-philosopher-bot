@@ -2,7 +2,7 @@ import threading
 
 import pytest
 
-import presentation
+import wiki_philosopher_bot.presentation as presentation
 from wiki_philosopher_bot.config import MAX_QUOTES
 from wiki_philosopher_bot.database_schema import make_empty_database_entry
 

@@ -1,5 +1,5 @@
 import json
-import cache
+import wiki_philosopher_bot.cache as cache
 import pytest
 import threading
 from wiki_philosopher_bot.runtime import persistence_lock, stats_lock

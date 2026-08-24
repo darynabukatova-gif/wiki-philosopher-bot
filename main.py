@@ -2,22 +2,22 @@ import time
 from pathlib import Path
 from typing import Dict
 from dataclasses import dataclass
-from evaluation import (
+from wiki_philosopher_bot.evaluation import (
     persist_canonical_evaluation,
     process_title,
 )
-from telegram_bot import send_message
+from wiki_philosopher_bot.telegram_bot import send_message
 from wiki_philosopher_bot.runtime import stats_lock, persistence_lock
 from concurrent.futures import ThreadPoolExecutor
 from wiki_philosopher_bot.worker_runner import process_completed_futures
-from presentation import format_philosopher_message
+from wiki_philosopher_bot.presentation import format_philosopher_message
 from wiki_philosopher_bot.utils import RateLimiter, get_random_philosopher
-from wikipedia_api import (
+from wiki_philosopher_bot.wikipedia_api import (
     build_entity_cache,
     build_page_properties_cache,
     get_all_pages,
 )
-from cache import (
+from wiki_philosopher_bot.cache import (
     load_database,
     update_database_entry,
 )

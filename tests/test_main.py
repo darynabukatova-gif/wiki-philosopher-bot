@@ -3,9 +3,9 @@ import json
 import main
 import pytest
 import threading
-import cache
-import evaluation
-import wikipedia_api
+import wiki_philosopher_bot.cache as cache
+import wiki_philosopher_bot.evaluation as evaluation
+import wiki_philosopher_bot.wikipedia_api as wikipedia_api
 from wiki_philosopher_bot.config import (
     CURRENT_EVALUATION_ALGORITHM_VERSION,
     CURRENT_QUOTE_PARSER_VERSION,
@@ -14,7 +14,7 @@ from wiki_philosopher_bot.database_schema import (
     make_empty_database_entry,
     serialize_database_entries,
 )
-from telegram_bot import TelegramResult
+from wiki_philosopher_bot.telegram_bot import TelegramResult
 
 
 @pytest.fixture(autouse=True)

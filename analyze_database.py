@@ -10,16 +10,16 @@ from itertools import combinations
 from pathlib import Path
 from unittest.mock import patch
 
-from cache import load_database
+from wiki_philosopher_bot.cache import load_database
 from wiki_philosopher_bot.config import (
     CURRENT_EVALUATION_ALGORITHM_VERSION,
     CURRENT_QUOTE_PARSER_VERSION,
     CANONICAL_DATA_FOLDER,
     DATABASE_FILE,
 )
-import evaluation
+import wiki_philosopher_bot.evaluation as evaluation
 from wiki_philosopher_bot.utils import candidate_selection_weight
-from wikipedia_api import quote_selection_weight
+from wiki_philosopher_bot.wikipedia_api import quote_selection_weight
 
 
 CONFIDENCE_FIELDS = (

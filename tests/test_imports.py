@@ -1,10 +1,10 @@
 import sys
-import cache
+import wiki_philosopher_bot.cache as cache
 import pytest
 import importlib
 import subprocess
-import telegram_bot
-import wikipedia_api
+import wiki_philosopher_bot.telegram_bot as telegram_bot
+import wiki_philosopher_bot.wikipedia_api as wikipedia_api
 from pathlib import Path
 from concurrent import futures
 

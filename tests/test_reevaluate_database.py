@@ -6,11 +6,11 @@ from pathlib import Path
 
 import pytest
 
-import cache
-import evaluation
+import wiki_philosopher_bot.cache as cache
+import wiki_philosopher_bot.evaluation as evaluation
 import main
 import reevaluate_database
-import wikipedia_api
+import wiki_philosopher_bot.wikipedia_api as wikipedia_api
 from wiki_philosopher_bot.config import CURRENT_EVALUATION_ALGORITHM_VERSION
 from wiki_philosopher_bot.database_schema import (
     make_empty_database_entry,

@@ -5,12 +5,12 @@ import json
 from pathlib import Path
 
 import analyze_database
-import cache
-import evaluation
+import wiki_philosopher_bot.cache as cache
+import wiki_philosopher_bot.evaluation as evaluation
 import main
 import pytest
 import wiki_philosopher_bot.utils as utils
-import wikipedia_api
+import wiki_philosopher_bot.wikipedia_api as wikipedia_api
 from wiki_philosopher_bot.config import (
     CURRENT_EVALUATION_ALGORITHM_VERSION,
     CURRENT_QUOTE_PARSER_VERSION,

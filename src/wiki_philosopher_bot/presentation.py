@@ -3,7 +3,7 @@ import re
 
 from wiki_philosopher_bot.utils import clean_title
 from wiki_philosopher_bot.config import MAX_QUOTES
-from wikipedia_api import get_random_quote
+from wiki_philosopher_bot.wikipedia_api import get_random_quote
 
 
 def normalize_quote_text(text: str) -> str:

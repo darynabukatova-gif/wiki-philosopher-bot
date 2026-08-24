@@ -2,7 +2,7 @@
 
 import argparse
 
-from cache import create_database_backup
+from wiki_philosopher_bot.cache import create_database_backup
 from wiki_philosopher_bot.config import (
     CANONICAL_DATA_FOLDER,
     DATABASE_BACKUP_FOLDER,

@@ -5,9 +5,9 @@ from datetime import date
 import pytest
 
 import check_recent_deaths
-import wikipedia_api
+import wiki_philosopher_bot.wikipedia_api as wikipedia_api
 from wiki_philosopher_bot.database_schema import make_empty_database_entry, serialize_database_entries
-from telegram_bot import TelegramResult
+from wiki_philosopher_bot.telegram_bot import TelegramResult
 
 
 def monitored_entry(title, qid="Q1", status="accepted", death_year=None):
