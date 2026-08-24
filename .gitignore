@@ -23,3 +23,8 @@ bot-run-*.txt
 *.tmp
 *.swp
 .DS_Store
+
+# Python packaging artifacts
+*.egg-info/
+build/
+dist/
