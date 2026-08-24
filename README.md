@@ -23,16 +23,23 @@ Development and test dependencies are listed in
 
 ## Installation
 
+Create and activate a virtual environment:
+
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
 ```
 
-For development and tests:
+Install the project:
 
 ```bash
-pip install -r requirements-dev.txt
+pip install -e .
+```
+
+For development and tests, install the development dependencies as well:
+
+```bash
+pip install -e ".[dev]"
 ```
 
 ## Configuration
