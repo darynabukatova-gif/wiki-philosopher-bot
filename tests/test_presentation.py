@@ -3,8 +3,24 @@ import threading
 import pytest
 
 import wiki_philosopher_bot.presentation as presentation
+import wiki_philosopher_bot.database_schema as database_schema
 from wiki_philosopher_bot.config import MAX_QUOTES
 from wiki_philosopher_bot.database_schema import make_empty_database_entry
+
+
+def structured_quote(text):
+    return {
+        "text": text,
+        "source": {
+            "work": None,
+            "year": None,
+            "date": None,
+            "details": None,
+            "citation": None,
+            "url": None,
+        },
+        "retrieved_from": "Wikiquote",
+    }
 
 
 @pytest.mark.parametrize(
@@ -161,9 +177,7 @@ def test_format_candidate_message_forwards_runtime_state(
         captured["max_quotes"] = max_quotes
         captured["limiter"] = limiter
 
-        return {
-            "text": "A synthetic quotation for testing."
-        }
+        return structured_quote("A synthetic quotation for testing.")
 
     monkeypatch.setattr(
         presentation,
@@ -205,7 +219,7 @@ def test_format_philosopher_message_reads_summary_and_years_from_canonical_entry
     monkeypatch.setattr(
         presentation,
         "get_random_quote",
-        lambda *args, **kwargs: {"text": "A canonical quote."},
+        lambda *args, **kwargs: structured_quote("A canonical quote."),
     )
 
     message = presentation.format_philosopher_message(
@@ -253,7 +267,7 @@ def test_format_philosopher_message_formats_thales_bce_years(monkeypatch):
     monkeypatch.setattr(
         presentation,
         "get_random_quote",
-        lambda *args, **kwargs: {"text": "A canonical quote."},
+        lambda *args, **kwargs: structured_quote("A canonical quote."),
     )
 
     message = presentation.format_philosopher_message(
@@ -278,7 +292,7 @@ def test_format_philosopher_message_normalizes_display_quote_without_mutating_ca
         "about the existence of God , about human freedom and the "
         "immortality of the soul. < & >"
     )
-    quote = {"text": stored_quote}
+    quote = structured_quote(stored_quote)
     philosopher["quotes"]["items"] = [quote]
 
     monkeypatch.setattr(
@@ -297,8 +311,77 @@ def test_format_philosopher_message_normalizes_display_quote_without_mutating_ca
     )
 
     assert stored_quote == quote["text"]
-    assert philosopher["quotes"]["items"] == [{"text": stored_quote}]
+    assert philosopher["quotes"]["items"] == [structured_quote(stored_quote)]
     assert "God, about human freedom" in message
     assert "God , about human freedom" not in message
     assert "&lt; &amp; &gt;" in message
     assert "A canonical summary with &lt; &amp; &gt;." in message
+
+
+def test_prepare_philosopher_message_is_deterministic_and_snapshots_selected_quote():
+    philosopher = make_empty_database_entry("Ada Lovelace")
+    philosopher["summary"]["text"] = "A canonical summary."
+    quote = structured_quote("A canonical quote.")
+
+    first = presentation.prepare_philosopher_message(philosopher, quote)
+    second = presentation.prepare_philosopher_message(philosopher, quote)
+
+    assert first == second
+    assert first.quote_fingerprint == database_schema.quote_fingerprint(quote)
+    assert first.message_fingerprint == database_schema.message_fingerprint(first.message_text)
+    assert "<i>A canonical quote.</i>" in first.message_text
+    quote["text"] = "Mutated after preparation."
+    assert first.selected_quote["text"] == "A canonical quote."
+
+
+def test_prepare_philosopher_message_changes_with_selected_quote_and_rejects_invalid_quote():
+    philosopher = make_empty_database_entry("Ada Lovelace")
+    first = presentation.prepare_philosopher_message(
+        philosopher, structured_quote("First exact quote."),
+    )
+    second = presentation.prepare_philosopher_message(
+        philosopher, structured_quote("Second exact quote."),
+    )
+
+    assert first.quote_fingerprint != second.quote_fingerprint
+    assert first.message_fingerprint != second.message_fingerprint
+    with pytest.raises(ValueError, match="selected_quote"):
+        presentation.prepare_philosopher_message(philosopher, None)
+    with pytest.raises(ValueError, match="structured"):
+        presentation.prepare_philosopher_message(philosopher, {"text": "Missing source."})
+
+
+def test_selection_helper_renders_the_exact_quote_chosen_by_injected_chooser(monkeypatch):
+    philosopher = make_empty_database_entry("Ada Lovelace")
+    quotes = [
+        structured_quote("First exact quote."),
+        structured_quote("Second exact quote."),
+    ]
+    monkeypatch.setattr(presentation, "get_random_quote", lambda *args, **kwargs: quotes[1])
+
+    selected = presentation.select_quote_for_post(
+        philosopher, {philosopher["title"]: philosopher}, {}, threading.Lock(), threading.Lock(), "unused",
+    )
+    prepared = presentation.prepare_philosopher_message(philosopher, selected)
+
+    assert selected is quotes[1]
+    assert "Second exact quote." in prepared.message_text
+    assert "First exact quote." not in prepared.message_text
+
+
+def test_selection_helper_forwards_an_injected_chooser(monkeypatch):
+    philosopher = make_empty_database_entry("Ada Lovelace")
+    quote = structured_quote("Selected by injected chooser.")
+    captured = {}
+
+    def fake_get_random_quote(*args, **kwargs):
+        captured["chooser"] = kwargs["chooser"]
+        return quote
+
+    chooser = object()
+    monkeypatch.setattr(presentation, "get_random_quote", fake_get_random_quote)
+
+    assert presentation.select_quote_for_post(
+        philosopher, {}, {}, threading.Lock(), threading.Lock(), "unused", chooser=chooser,
+    ) is quote
+    assert captured["chooser"] is chooser

@@ -31,6 +31,9 @@ wiki-philosopher-purge-rejected-quotes = "wiki_philosopher_bot.cli.purge_rejecte
 wiki-philosopher-reevaluate = "wiki_philosopher_bot.cli.reevaluate_database:main"
 wiki-philosopher-refresh-quotes = "wiki_philosopher_bot.cli.refresh_quotes:main"
 wiki-philosopher-refresh-wikidata-dates = "wiki_philosopher_bot.cli.refresh_wikidata_dates:main"
+wiki-philosopher-prepare-post = "wiki_philosopher_bot.cli.prepare_post:main"
+wiki-philosopher-dispatch-post = "wiki_philosopher_bot.cli.dispatch_post:main"
+wiki-philosopher-reconcile-post = "wiki_philosopher_bot.cli.reconcile_post:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}

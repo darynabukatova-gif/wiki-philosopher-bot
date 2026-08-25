@@ -67,6 +67,7 @@ MIGRATION_BACKUP_FOLDER = "backups/migration"
 OPERATIONAL_BACKUP_RETENTION_DAYS = 90
 
 RUN_REPORT_FOLDER = "reports/runs"
+POSTING_ATTEMPT_REPORT_FOLDER = "reports/runs/posting-attempts"
 QUOTE_REFRESH_REPORT_FOLDER = "reports/quote-refresh"
 WIKIDATA_DATE_REFRESH_REPORT_FOLDER = "reports/wikidata-date-refresh"
 PURGE_REPORT_FOLDER = "reports/purge"

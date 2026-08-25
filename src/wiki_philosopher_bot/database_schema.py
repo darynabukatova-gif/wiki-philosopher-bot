@@ -2,11 +2,329 @@
 
 import json
 import re
-from datetime import date
+import hashlib
+import uuid
+from copy import deepcopy
+from datetime import date, datetime, timezone
 from typing import List
 
 
 DATABASE_SCHEMA_VERSION = 1
+
+
+POSTING_ATTEMPT_STATES = frozenset(
+    ("pending", "sent", "failed", "unknown", "cancelled")
+)
+UNRESOLVED_POSTING_ATTEMPT_STATES = frozenset(
+    ("pending", "failed", "unknown")
+)
+POSTING_ATTEMPT_ERROR_KINDS = frozenset(
+    (
+        "telegram_rejected",
+        "transport_ambiguous",
+        "response_invalid",
+        "persistence_error",
+        "configuration_error",
+    )
+)
+POSTING_ATTEMPT_ALLOWED_TRANSITIONS = {
+    "pending": frozenset(("sent", "failed", "unknown", "cancelled")),
+    "failed": frozenset(("cancelled",)),
+    "unknown": frozenset(("sent", "cancelled")),
+    "sent": frozenset(),
+    "cancelled": frozenset(),
+}
+_SHA256_HEX_RE = re.compile(r"^[0-9a-f]{64}$")
+_UTC_TIMESTAMP_RE = re.compile(
+    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$"
+)
+_POSTING_ATTEMPT_ERROR_SUMMARY_MAX_LENGTH = 500
+_UNSAFE_ATTEMPT_ERROR_PATTERNS = (
+    re.compile(r"\b\d{6,12}:[A-Za-z0-9_-]{20,}\b"),
+    re.compile(r"(?i)\b(?:authorization|bearer)\s+[^\s]+"),
+    re.compile(r"(?i)\b(?:telegram_)?token\s*[:=]\s*\S+"),
+    re.compile(r"(?i)\b(?:telegram_)?chat(?:_|\s|-)?id\s*[:=]\s*-?\d+"),
+)
+
+
+def _utc_timestamp_text(now=None):
+    """Return the canonical UTC timestamp representation for attempt metadata."""
+    if now is None:
+        now = datetime.now(timezone.utc)
+    if not isinstance(now, datetime):
+        raise TypeError("now must be a datetime")
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    else:
+        now = now.astimezone(timezone.utc)
+    return now.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _is_utc_timestamp(value):
+    if not isinstance(value, str) or not _UTC_TIMESTAMP_RE.fullmatch(value):
+        return False
+    try:
+        datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ")
+    except ValueError:
+        return False
+    return True
+
+
+def _is_sha256_hex(value):
+    return isinstance(value, str) and _SHA256_HEX_RE.fullmatch(value) is not None
+
+
+def sanitize_posting_attempt_error_summary(value):
+    """Return a short report-safe error summary without common secret forms."""
+    if not isinstance(value, str):
+        raise ValueError("error_summary must be a string")
+    normalized = " ".join(value.split())
+    if not normalized or len(normalized) > _POSTING_ATTEMPT_ERROR_SUMMARY_MAX_LENGTH:
+        raise ValueError("error_summary must be a short single-line string")
+    if any(pattern.search(normalized) for pattern in _UNSAFE_ATTEMPT_ERROR_PATTERNS):
+        raise ValueError("error_summary must not contain credentials or chat identifiers")
+    return normalized
+
+
+def sanitize_posting_attempt_resolution_note(value):
+    """Return a short report-safe operator note without common secret forms."""
+    if not isinstance(value, str):
+        raise ValueError("resolution_note must be a string")
+    normalized = " ".join(value.split())
+    if not normalized or len(normalized) > _POSTING_ATTEMPT_ERROR_SUMMARY_MAX_LENGTH:
+        raise ValueError("resolution_note must be a short single-line string")
+    if any(pattern.search(normalized) for pattern in _UNSAFE_ATTEMPT_ERROR_PATTERNS):
+        raise ValueError("resolution_note must not contain credentials or chat identifiers")
+    return normalized
+
+
+def _canonical_quote_identity(selected_quote):
+    if not isinstance(selected_quote, dict):
+        raise ValueError("selected_quote must be an object")
+    text = selected_quote.get("text")
+    source = selected_quote.get("source")
+    if not isinstance(text, str) or not text:
+        raise ValueError("selected_quote.text must be a non-empty string")
+    if not isinstance(source, dict):
+        raise ValueError("selected_quote.source must be a structured object")
+    return {"source": source, "text": text}
+
+
+def quote_fingerprint(selected_quote):
+    """Return a stable SHA-256 identity for one quote's text and structured source."""
+    identity = _canonical_quote_identity(selected_quote)
+    try:
+        canonical = json.dumps(
+            identity,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    except TypeError as error:
+        raise ValueError("selected_quote must be JSON-serializable") from error
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def message_fingerprint(message_text):
+    """Return a SHA-256 fingerprint for the exact UTF-8 outbound message."""
+    if not isinstance(message_text, str) or not message_text:
+        raise ValueError("message_text must be a non-empty string")
+    return hashlib.sha256(message_text.encode("utf-8")).hexdigest()
+
+
+def _validate_posting_attempt(attempt) -> List[str]:
+    """Validate one future durable Telegram posting attempt."""
+    errors = []
+    if not isinstance(attempt, dict):
+        return ["posting.attempts item must be an object"]
+
+    required_keys = (
+        "attempt_id", "title", "quote_fingerprint", "message_fingerprint",
+        "message_text", "created_at", "state", "state_changed_at",
+        "telegram_message_id", "error_kind", "error_summary", "resolution_note",
+    )
+    for key in required_keys:
+        if key not in attempt:
+            errors.append("posting.attempts item missing {}".format(key))
+
+    if not isinstance(attempt.get("attempt_id"), str) or not attempt.get("attempt_id").strip():
+        errors.append("posting.attempts.attempt_id must be a non-empty string")
+    if not isinstance(attempt.get("title"), str) or not attempt.get("title").strip():
+        errors.append("posting.attempts.title must be a non-empty string")
+    for field_name in ("quote_fingerprint", "message_fingerprint"):
+        if not _is_sha256_hex(attempt.get(field_name)):
+            errors.append("posting.attempts.{} must be a SHA-256 hex string".format(field_name))
+    if not isinstance(attempt.get("message_text"), str) or not attempt.get("message_text"):
+        errors.append("posting.attempts.message_text must be a non-empty string")
+    for field_name in ("created_at", "state_changed_at"):
+        if not _is_utc_timestamp(attempt.get(field_name)):
+            errors.append("posting.attempts.{} must be a UTC timestamp".format(field_name))
+
+    state = attempt.get("state")
+    if state not in POSTING_ATTEMPT_STATES:
+        errors.append("posting.attempts.state must be a supported state")
+
+    message_id = attempt.get("telegram_message_id")
+    if message_id is not None and not (_is_int_not_bool(message_id) and message_id > 0):
+        errors.append("posting.attempts.telegram_message_id must be a positive integer or null")
+
+    error_kind = attempt.get("error_kind")
+    if error_kind is not None and error_kind not in POSTING_ATTEMPT_ERROR_KINDS:
+        errors.append("posting.attempts.error_kind must be a supported value or null")
+
+    error_summary = attempt.get("error_summary")
+    if error_summary is not None:
+        try:
+            sanitized_error_summary = sanitize_posting_attempt_error_summary(error_summary)
+        except ValueError:
+            errors.append("posting.attempts.error_summary must be a safe short single-line string or null")
+        else:
+            if sanitized_error_summary != error_summary:
+                errors.append("posting.attempts.error_summary must already be normalized")
+
+    resolution_note = attempt.get("resolution_note")
+    if resolution_note is not None:
+        try:
+            sanitized_resolution_note = sanitize_posting_attempt_resolution_note(
+                resolution_note
+            )
+        except ValueError:
+            errors.append(
+                "posting.attempts.resolution_note must be a safe short single-line string or null"
+            )
+        else:
+            if sanitized_resolution_note != resolution_note:
+                errors.append("posting.attempts.resolution_note must already be normalized")
+
+    if state == "sent":
+        if message_id is None:
+            errors.append("posting.attempts.sent requires telegram_message_id")
+        if error_kind is not None or error_summary is not None:
+            errors.append("posting.attempts.sent must not retain an unresolved error")
+
+    if state in ("failed", "unknown") and error_kind is None:
+        errors.append("posting.attempts.{} requires error_kind".format(state))
+
+    if state == "cancelled" and not resolution_note:
+        errors.append("posting.attempts.cancelled requires resolution_note")
+
+    return errors
+
+
+def validate_posting_attempt(attempt) -> List[str]:
+    """Public validation entry point for one posting-attempt object."""
+    return _validate_posting_attempt(attempt)
+
+
+def make_pending_posting_attempt(
+    title,
+    selected_quote,
+    message_text,
+    attempt_id=None,
+    now=None,
+):
+    """Construct, but do not persist, one validated pending posting attempt."""
+    if not isinstance(title, str) or not title.strip():
+        raise ValueError("title must be a non-empty string")
+    if attempt_id is None:
+        attempt_id = str(uuid.uuid4())
+    timestamp = _utc_timestamp_text(now)
+    attempt = {
+        "attempt_id": attempt_id,
+        "title": title,
+        "quote_fingerprint": quote_fingerprint(selected_quote),
+        "message_fingerprint": message_fingerprint(message_text),
+        "message_text": message_text,
+        "created_at": timestamp,
+        "state": "pending",
+        "state_changed_at": timestamp,
+        "telegram_message_id": None,
+        "error_kind": None,
+        "error_summary": None,
+        "resolution_note": None,
+    }
+    errors = validate_posting_attempt(attempt)
+    if errors:
+        raise ValueError("\n".join(errors))
+    return attempt
+
+
+def posting_attempts(entry):
+    """Return the posting attempts list, treating old records as an empty list."""
+    posting = entry.get("posting") if isinstance(entry, dict) else None
+    attempts = posting.get("attempts", []) if isinstance(posting, dict) else []
+    return attempts if isinstance(attempts, list) else []
+
+
+def latest_posting_attempt(entry):
+    attempts = posting_attempts(entry)
+    return attempts[-1] if attempts else None
+
+
+def posting_attempt_by_id(entry, attempt_id):
+    for attempt in posting_attempts(entry):
+        if attempt.get("attempt_id") == attempt_id:
+            return attempt
+    return None
+
+
+def has_unresolved_posting_attempt(entry):
+    attempt = latest_posting_attempt(entry)
+    return attempt is not None and attempt.get("state") in UNRESOLVED_POSTING_ATTEMPT_STATES
+
+
+def transition_posting_attempt(
+    attempt,
+    new_state,
+    now=None,
+    telegram_message_id=None,
+    error_kind=None,
+    error_summary=None,
+    resolution_note=None,
+):
+    """Return a validated copy of an attempt in one allowed next state."""
+    errors = validate_posting_attempt(attempt)
+    if errors:
+        raise ValueError("\n".join(errors))
+    current_state = attempt["state"]
+    if new_state not in POSTING_ATTEMPT_ALLOWED_TRANSITIONS[current_state]:
+        raise ValueError("Unsupported posting attempt transition: {} -> {}".format(current_state, new_state))
+
+    if new_state == "sent":
+        if not (_is_int_not_bool(telegram_message_id) and telegram_message_id > 0):
+            raise ValueError("sent posting attempts require a positive telegram_message_id")
+        if error_kind is not None or error_summary is not None:
+            raise ValueError("sent posting attempts must not retain an unresolved error")
+    elif new_state in ("failed", "unknown"):
+        if error_kind not in POSTING_ATTEMPT_ERROR_KINDS:
+            raise ValueError("{} posting attempts require a supported error_kind".format(new_state))
+    elif new_state == "cancelled":
+        if not isinstance(resolution_note, str) or not resolution_note.strip():
+            raise ValueError("cancelled posting attempts require a resolution_note")
+
+    if error_summary is not None:
+        error_summary = sanitize_posting_attempt_error_summary(error_summary)
+    if resolution_note is not None:
+        resolution_note = sanitize_posting_attempt_resolution_note(resolution_note)
+
+    updated = deepcopy(attempt)
+    updated["state"] = new_state
+    updated["state_changed_at"] = _utc_timestamp_text(now)
+    if new_state == "sent":
+        updated["telegram_message_id"] = telegram_message_id
+        updated["error_kind"] = None
+        updated["error_summary"] = None
+    elif new_state in ("failed", "unknown"):
+        updated["telegram_message_id"] = None
+        updated["error_kind"] = error_kind
+        updated["error_summary"] = error_summary
+    if resolution_note is not None:
+        updated["resolution_note"] = resolution_note
+
+    errors = validate_posting_attempt(updated)
+    if errors:
+        raise ValueError("\n".join(errors))
+    return updated
 
 
 EVALUATION_SERIALIZATION_ORDER = (
@@ -71,6 +389,7 @@ def make_empty_database_entry(title: str) -> dict:
             "has_been_posted": False,
             "posted_at": [],
             "legacy_posted_without_timestamp": False,
+            "attempts": [],
         },
         "migration": {
             "legacy_sources": [],
@@ -693,6 +1012,38 @@ def validate_database_entry(entry: dict) -> List[str]:
                 "posting.has_been_posted must be true "
                 "when legacy_posted_without_timestamp is true"
             )
+
+        # `attempts` is deliberately optional: historical canonical records
+        # remain schema-valid without an offline rewrite.
+        attempts = posting.get("attempts", [])
+        if not isinstance(attempts, list):
+            errors.append("posting.attempts must be a list when present")
+        else:
+            seen_attempt_ids = set()
+            for index, attempt in enumerate(attempts):
+                for attempt_error in validate_posting_attempt(attempt):
+                    errors.append(
+                        "posting.attempts[{}]: {}".format(index, attempt_error)
+                    )
+                if isinstance(attempt, dict):
+                    attempt_title = attempt.get("title")
+                    if attempt_title != entry["title"]:
+                        errors.append(
+                            "posting.attempts[{}].title must match entry.title".format(index)
+                        )
+                    attempt_id = attempt.get("attempt_id")
+                    if isinstance(attempt_id, str):
+                        if attempt_id in seen_attempt_ids:
+                            errors.append("posting.attempts attempt_id values must be unique")
+                        else:
+                            seen_attempt_ids.add(attempt_id)
+                    if (
+                        attempt.get("state") == "sent"
+                        and has_been_posted is not True
+                    ):
+                        errors.append(
+                            "posting.has_been_posted must be true when an attempt is sent"
+                        )
 
     return errors
 

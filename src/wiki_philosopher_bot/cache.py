@@ -4,6 +4,7 @@ import copy
 import hashlib
 import tempfile
 import re
+import time
 from pathlib import Path
 from datetime import datetime, timezone
 from dataclasses import dataclass, field
@@ -13,6 +14,8 @@ from wiki_philosopher_bot.database_schema import (
     serialize_database_entries,
     validate_database_dataset,
     validate_database_entry,
+    validate_posting_attempt,
+    transition_posting_attempt,
 )
 from wiki_philosopher_bot.utils import get_data_path
 from wiki_philosopher_bot.config import DATABASE_BACKUP_FOLDER, OPERATIONAL_BACKUP_RETENTION_DAYS
@@ -427,6 +430,112 @@ def update_database_entry(
         database[title] = copy.deepcopy(updated_entry)
 
         return final_hash
+
+
+def append_posting_attempt(
+    database,
+    title,
+    attempt,
+    filename,
+    data_folder,
+    persistence_lock,
+):
+    """Atomically append one validated future posting attempt to an existing title."""
+    if not isinstance(title, str) or not title:
+        raise ValueError("title must be a non-empty string")
+    if title not in database:
+        raise KeyError("Cannot append posting attempt for missing title: {}".format(title))
+    attempt_errors = validate_posting_attempt(attempt)
+    if attempt_errors:
+        raise ValueError("\n".join(attempt_errors))
+    if attempt.get("title") != title:
+        raise ValueError("posting attempt title must match canonical title")
+
+    def append(candidate):
+        posting = candidate["posting"]
+        attempts = posting.setdefault("attempts", [])
+        if any(existing.get("attempt_id") == attempt["attempt_id"] for existing in attempts):
+            raise ValueError("Duplicate posting attempt ID for title: {}".format(title))
+        attempts.append(copy.deepcopy(attempt))
+
+    return update_database_entry(
+        database,
+        title,
+        append,
+        filename,
+        data_folder,
+        persistence_lock,
+    )
+
+
+def transition_database_posting_attempt(
+    database,
+    title,
+    attempt_id,
+    new_state,
+    filename,
+    data_folder,
+    persistence_lock,
+    now=None,
+    posted_at_timestamp=None,
+    telegram_message_id=None,
+    error_kind=None,
+    error_summary=None,
+    resolution_note=None,
+):
+    """Atomically transition one durable posting attempt by its exact ID.
+
+    A `sent` transition also updates the established title-level posting
+    fields in the same canonical rewrite.  This primitive is intentionally
+    unused by the current Telegram posting path until a later outbox phase.
+    """
+    if not isinstance(title, str) or not title:
+        raise ValueError("title must be a non-empty string")
+    if not isinstance(attempt_id, str) or not attempt_id:
+        raise ValueError("attempt_id must be a non-empty string")
+    if title not in database:
+        raise KeyError("Cannot transition posting attempt for missing title: {}".format(title))
+    if posted_at_timestamp is None:
+        posted_at_timestamp = int(time.time())
+    if not isinstance(posted_at_timestamp, int) or isinstance(posted_at_timestamp, bool):
+        raise ValueError("posted_at_timestamp must be an integer")
+
+    def transition(candidate):
+        posting = candidate["posting"]
+        attempts = posting.get("attempts", [])
+        matching_index = next(
+            (
+                index
+                for index, existing in enumerate(attempts)
+                if existing.get("attempt_id") == attempt_id
+            ),
+            None,
+        )
+        if matching_index is None:
+            raise KeyError("Unknown posting attempt ID for title: {}".format(title))
+        existing = attempts[matching_index]
+        updated = transition_posting_attempt(
+            existing,
+            new_state,
+            now=now,
+            telegram_message_id=telegram_message_id,
+            error_kind=error_kind,
+            error_summary=error_summary,
+            resolution_note=resolution_note,
+        )
+        attempts[matching_index] = updated
+        if new_state == "sent":
+            posting["has_been_posted"] = True
+            posting["posted_at"].append(posted_at_timestamp)
+
+    return update_database_entry(
+        database,
+        title,
+        transition,
+        filename,
+        data_folder,
+        persistence_lock,
+    )
 
 
 def _backup_database_unlocked(filename, data_folder, backup_path):

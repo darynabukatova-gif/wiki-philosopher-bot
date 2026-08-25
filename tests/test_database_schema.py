@@ -107,6 +107,7 @@ def test_runtime_empty_entry_matches_canonical_schema():
             "has_been_posted": False,
             "posted_at": [],
             "legacy_posted_without_timestamp": False,
+            "attempts": [],
         },
         "migration": {
             "legacy_sources": [],

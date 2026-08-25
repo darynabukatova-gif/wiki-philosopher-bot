@@ -1,3 +1,4 @@
+import argparse
 import time
 from pathlib import Path
 from typing import Dict
@@ -10,7 +11,10 @@ from wiki_philosopher_bot.telegram_bot import send_message
 from wiki_philosopher_bot.runtime import stats_lock, persistence_lock
 from concurrent.futures import ThreadPoolExecutor
 from wiki_philosopher_bot.worker_runner import process_completed_futures
-from wiki_philosopher_bot.presentation import format_philosopher_message
+from wiki_philosopher_bot.presentation import (
+    prepare_philosopher_message,
+    select_quote_for_post,
+)
 from wiki_philosopher_bot.utils import RateLimiter, get_random_philosopher
 from wiki_philosopher_bot.wikipedia_api import (
     build_entity_cache,
@@ -244,7 +248,11 @@ def send_and_record_post(
 
     return telegram_result
 
-def main():
+def run_unsafe_direct_posting():
+    """Run the legacy one-process flow only when explicitly requested.
+
+    It lacks the external durable checkpoint required by unattended posting.
+    """
     started_at = time.time()
     state = None
     baseline = None
@@ -294,7 +302,7 @@ def main():
             return 0
 
         selected_posting_title = philosopher["title"]
-        message = format_philosopher_message(
+        selected_quote = select_quote_for_post(
             philosopher,
             state.database,
             state.stats,
@@ -304,6 +312,11 @@ def main():
             max_quotes=MAX_QUOTES,
             limiter=limiter,
         )
+        prepared_message = prepare_philosopher_message(
+            philosopher,
+            selected_quote,
+        )
+        message = prepared_message.message_text
 
         telegram_result = send_and_record_post(
             selected_posting_title,
@@ -356,6 +369,26 @@ def main():
                 print("Failed to save run report: {}".format(error))
             else:
                 print(format_run_summary(report, report_path, diagnostics))
+
+
+def main(argv=None):
+    """Safe package entry point; direct Telegram posting is opt-in only."""
+    parser = argparse.ArgumentParser(
+        description="Unattended posting uses explicit prepare and dispatch commands."
+    )
+    parser.add_argument(
+        "--unsafe-direct-post",
+        action="store_true",
+        help="Run the legacy one-process posting flow without an external checkpoint.",
+    )
+    args = parser.parse_args(argv)
+    if not args.unsafe_direct_post:
+        print(
+            "Direct posting is disabled by default. Use wiki-philosopher-prepare-post "
+            "and wiki-philosopher-dispatch-post."
+        )
+        return 2
+    return run_unsafe_direct_posting()
 
 if __name__ == "__main__":
     raise SystemExit(main())

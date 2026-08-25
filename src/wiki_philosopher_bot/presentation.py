@@ -1,9 +1,31 @@
 from html import escape
+from copy import deepcopy
+from dataclasses import dataclass
 import re
 
 from wiki_philosopher_bot.utils import clean_title
 from wiki_philosopher_bot.config import MAX_QUOTES
+from wiki_philosopher_bot.database_schema import (
+    message_fingerprint,
+    quote_fingerprint,
+)
 from wiki_philosopher_bot.wikipedia_api import get_random_quote
+
+
+@dataclass(frozen=True)
+class PreparedPhilosopherMessage:
+    """Immutable snapshot of one exact future Telegram payload.
+
+    The selected quote is copied when prepared so the result holds no mutable
+    reference into the canonical in-memory database.  A later outbox phase can
+    persist this exact message text without reselecting or reformatting it.
+    """
+
+    title: str
+    selected_quote: dict
+    message_text: str
+    quote_fingerprint: str
+    message_fingerprint: str
 
 
 def normalize_quote_text(text: str) -> str:
@@ -88,7 +110,7 @@ def format_life_years(birth_year, death_year):
         return "(died {})".format(format_life_year(death_year))
     return ""
 
-def format_philosopher_message(
+def select_quote_for_post(
     philosopher,
     database,
     stats,
@@ -97,31 +119,50 @@ def format_philosopher_message(
     data_folder,
     max_quotes=MAX_QUOTES,
     limiter=None,
+    chooser=None,
 ):
-    
+    """Select one quote using the unchanged existing quote-selection policy."""
     title = philosopher.get("title", "Unknown")
-
-    wikidata = philosopher.get("wikidata", {})
-    birth = wikidata.get("birth_year")
-    death = wikidata.get("death_year")
-
-    quote = get_random_quote(
+    kwargs = {
+        "max_quotes": max_quotes,
+        "limiter": limiter,
+    }
+    if chooser is not None:
+        kwargs["chooser"] = chooser
+    return get_random_quote(
         title,
         database,
         stats,
         stats_lock,
         persistence_lock,
         data_folder,
-        max_quotes=MAX_QUOTES,
-        limiter=limiter,
+        **kwargs,
     )
 
-    if quote:
-        quote_text = normalize_quote_text(quote["text"])
-        attribution = format_quote_attribution(quote)
-    else:
-        quote_text = "No quote found."
-        attribution = None
+
+def prepare_philosopher_message(philosopher, selected_quote):
+    """Build one deterministic Telegram payload from an exact selected quote."""
+    if not isinstance(philosopher, dict):
+        raise ValueError("philosopher must be an object")
+    title = philosopher.get("title")
+    if not isinstance(title, str) or not title:
+        raise ValueError("philosopher.title must be a non-empty string")
+    if not isinstance(selected_quote, dict):
+        raise ValueError("selected_quote must be an object")
+    if not isinstance(selected_quote.get("text"), str) or not selected_quote["text"]:
+        raise ValueError("selected_quote.text must be a non-empty string")
+
+    # This also requires the structured source required by durable quote
+    # identity.  Presentation still renders citation-only fallbacks through
+    # format_quote_attribution.
+    selected_quote_fingerprint = quote_fingerprint(selected_quote)
+    quote = deepcopy(selected_quote)
+
+    wikidata = philosopher.get("wikidata", {})
+    birth = wikidata.get("birth_year")
+    death = wikidata.get("death_year")
+    quote_text = normalize_quote_text(quote["text"])
+    attribution = format_quote_attribution(quote)
 
     summary = philosopher.get("summary", {}).get("text")
     summary = summary or "No summary available."
@@ -151,4 +192,37 @@ def format_philosopher_message(
     <a href="{wiki_url}">Wikipedia article</a>
     """
 
-    return message
+    return PreparedPhilosopherMessage(
+        title=title,
+        selected_quote=quote,
+        message_text=message,
+        quote_fingerprint=selected_quote_fingerprint,
+        message_fingerprint=message_fingerprint(message),
+    )
+
+
+def format_philosopher_message(
+    philosopher,
+    database,
+    stats,
+    stats_lock,
+    persistence_lock,
+    data_folder,
+    max_quotes=MAX_QUOTES,
+    limiter=None,
+):
+    """Compatibility adapter for the pre-outbox one-process posting flow."""
+    selected_quote = select_quote_for_post(
+        philosopher,
+        database,
+        stats,
+        stats_lock,
+        persistence_lock,
+        data_folder,
+        max_quotes=max_quotes,
+        limiter=limiter,
+    )
+    return prepare_philosopher_message(
+        philosopher,
+        selected_quote,
+    ).message_text

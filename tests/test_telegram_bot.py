@@ -37,7 +37,7 @@ def test_send_message_returns_success_result():
                 "timeout": timeout,
             }
         )
-        return FakeTelegramResponse(payload={"ok": True})
+        return FakeTelegramResponse(payload={"ok": True, "result": {"message_id": 42}})
 
     result = telegram_bot.send_message(
         "Hello",
@@ -45,8 +45,10 @@ def test_send_message_returns_success_result():
     )
 
     assert result.ok is True
-    assert result.response_data == {"ok": True}
+    assert result.response_data == {"ok": True, "result": {"message_id": 42}}
     assert result.error_reason is None
+    assert result.outcome == telegram_bot.TELEGRAM_OUTCOME_CONFIRMED_SUCCESS
+    assert result.message_id == 42
     assert len(calls) == 1
 
 def test_send_message_returns_http_failure_result():
@@ -63,6 +65,7 @@ def test_send_message_returns_http_failure_result():
     assert result.ok is False
     assert result.response_data is None
     assert result.error_reason == "http_error"
+    assert result.outcome == telegram_bot.TELEGRAM_OUTCOME_AMBIGUOUS
 
 def test_send_message_returns_request_failure_result():
     def fake_post(url, data, timeout):
@@ -75,6 +78,7 @@ def test_send_message_returns_request_failure_result():
 
     assert result.ok is False
     assert result.error_reason == "request_exception"
+    assert result.outcome == telegram_bot.TELEGRAM_OUTCOME_AMBIGUOUS
 
 def test_send_message_returns_invalid_json_result():
     def fake_post(url, data, timeout):
@@ -89,6 +93,7 @@ def test_send_message_returns_invalid_json_result():
 
     assert result.ok is False
     assert result.error_reason == "invalid_json"
+    assert result.outcome == telegram_bot.TELEGRAM_OUTCOME_AMBIGUOUS
 
 def test_send_message_returns_telegram_failure_result():
     def fake_post(url, data, timeout):
@@ -110,6 +115,7 @@ def test_send_message_returns_telegram_failure_result():
         "ok": False,
         "description": "Bad Request",
     }
+    assert result.outcome == telegram_bot.TELEGRAM_OUTCOME_DEFINITE_REJECTION
 
 
 def test_send_message_returns_failure_on_non_object_json():
@@ -125,6 +131,7 @@ def test_send_message_returns_failure_on_non_object_json():
         assert result.ok is False
         assert result.response_data is None
         assert result.error_reason == "invalid_response"
+        assert result.outcome == telegram_bot.TELEGRAM_OUTCOME_AMBIGUOUS
 
 
 def test_send_message_does_not_swallow_unexpected_programming_exception():
@@ -159,3 +166,15 @@ def test_send_message_returns_failure_when_telegram_configuration_missing(
         assert result.ok is False
         assert result.response_data is None
         assert result.error_reason == "missing_configuration"
+        assert result.outcome == telegram_bot.TELEGRAM_OUTCOME_DEFINITE_FAILURE
+
+
+def test_ok_response_without_positive_message_id_is_not_confirmed_delivery():
+    result = telegram_bot.send_message(
+        "Hello",
+        post=lambda *args, **kwargs: FakeTelegramResponse(payload={"ok": True}),
+    )
+
+    assert result.ok is True
+    assert result.outcome == telegram_bot.TELEGRAM_OUTCOME_AMBIGUOUS
+    assert result.message_id is None

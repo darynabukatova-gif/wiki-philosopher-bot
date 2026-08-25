@@ -1,0 +1,200 @@
+name: Manual philosopher post
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wiki-philosopher-posting
+  cancel-in-progress: false
+
+jobs:
+  post:
+    name: Prepare, checkpoint, and dispatch one post
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source repository
+        uses: actions/checkout@v4
+
+      - name: Require private data repository configuration
+        env:
+          DATA_REPOSITORY: ${{ vars.DATA_REPOSITORY }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${DATA_REPOSITORY}" ]]; then
+            echo "::error::Set the DATA_REPOSITORY repository variable to owner/private-data-repository."
+            exit 1
+          fi
+          if [[ ! "${DATA_REPOSITORY}" =~ ^[^/[:space:]]+/[^/[:space:]]+$ ]]; then
+            echo "::error::DATA_REPOSITORY must have the form owner/private-data-repository."
+            exit 1
+          fi
+
+      - name: Check out authoritative private data repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ vars.DATA_REPOSITORY }}
+          token: ${{ secrets.DATA_REPO_TOKEN }}
+          path: private-data
+          fetch-depth: 1
+          persist-credentials: true
+
+      - name: Configure private data-repository commit identity
+        run: |
+          set -euo pipefail
+          git -C private-data config user.name "github-actions[bot]"
+          git -C private-data config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Install authoritative database for the application
+        run: |
+          set -euo pipefail
+          test -f private-data/database.jsonl
+          test ! -L private-data/database.jsonl
+          mkdir -p data
+          cp -- private-data/database.jsonl data/database.jsonl
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install application
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install .
+
+      - id: prepare
+        name: Prepare one pending posting attempt without Telegram
+        run: |
+          set -euo pipefail
+          output_path="${RUNNER_TEMP}/prepare-post-output.txt"
+          wiki-philosopher-prepare-post > "${output_path}" 2>&1
+          cat "${output_path}"
+          OUTPUT_PATH="${output_path}" python - <<'PY' >> "${GITHUB_OUTPUT}"
+          import json
+          import os
+          import sys
+
+          records = []
+          with open(os.environ["OUTPUT_PATH"], encoding="utf-8") as handle:
+              for line in handle:
+                  try:
+                      record = json.loads(line)
+                  except json.JSONDecodeError:
+                      continue
+                  if isinstance(record, dict) and record.get("phase") == "prepare":
+                      records.append(record)
+          if len(records) != 1:
+              raise SystemExit("Expected exactly one structured prepare result.")
+          result = records[0]
+          attempt_id = result.get("attempt_id")
+          if result.get("ok") is not True or result.get("ending_state") != "pending":
+              raise SystemExit("Prepare did not create a pending posting attempt.")
+          if not isinstance(attempt_id, str) or not attempt_id:
+              raise SystemExit("Prepare result did not contain a valid attempt ID.")
+          print("attempt_id={}".format(attempt_id))
+          PY
+
+      - name: Copy pending checkpoint into private data repository
+        run: |
+          set -euo pipefail
+          cp -- data/database.jsonl private-data/database.jsonl
+
+      - name: Commit and push pending database checkpoint
+        run: |
+          set -euo pipefail
+          git -C private-data diff --cached --quiet
+          git -C private-data add -- database.jsonl
+          staged_files="$(git -C private-data diff --cached --name-only)"
+          if [[ "${staged_files}" != "database.jsonl" ]]; then
+            echo "::error::Refusing to commit anything other than database.jsonl."
+            exit 1
+          fi
+          if git -C private-data diff --cached --quiet; then
+            echo "::error::Prepare produced no pending database checkpoint; dispatch is forbidden."
+            exit 1
+          fi
+          git -C private-data commit -m "Checkpoint pending philosopher post ${{ steps.prepare.outputs.attempt_id }}"
+          git -C private-data push origin HEAD
+
+      - id: dispatch
+        name: Dispatch exactly the checkpointed pending attempt once
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          ATTEMPT_ID: ${{ steps.prepare.outputs.attempt_id }}
+        run: |
+          set -uo pipefail
+          output_path="${RUNNER_TEMP}/dispatch-post-output.txt"
+          set +e
+          wiki-philosopher-dispatch-post --attempt-id "${ATTEMPT_ID}" > "${output_path}" 2>&1
+          dispatch_status=$?
+          set -e
+          cat "${output_path}"
+          OUTPUT_PATH="${output_path}" ATTEMPT_ID="${ATTEMPT_ID}" python - <<'PY' >> "${GITHUB_OUTPUT}"
+          import json
+          import os
+          import sys
+
+          records = []
+          with open(os.environ["OUTPUT_PATH"], encoding="utf-8") as handle:
+              for line in handle:
+                  try:
+                      record = json.loads(line)
+                  except json.JSONDecodeError:
+                      continue
+                  if isinstance(record, dict) and record.get("phase") == "dispatch":
+                      records.append(record)
+          if len(records) != 1:
+              raise SystemExit("Expected exactly one structured dispatch result.")
+          result = records[0]
+          if result.get("attempt_id") != os.environ["ATTEMPT_ID"]:
+              raise SystemExit("Dispatch result attempt ID did not match the checkpointed attempt.")
+          print("persistence_succeeded={}".format(
+              "true" if result.get("persistence_succeeded") is True else "false"
+          ))
+          print("ending_state={}".format(result.get("ending_state") or ""))
+          PY
+          exit "${dispatch_status}"
+
+      - name: Copy durable terminal state into private data repository
+        if: ${{ always() && steps.dispatch.outputs.persistence_succeeded == 'true' }}
+        run: |
+          set -euo pipefail
+          cp -- data/database.jsonl private-data/database.jsonl
+
+      - name: Commit and push terminal database checkpoint
+        if: ${{ always() && steps.dispatch.outputs.persistence_succeeded == 'true' }}
+        run: |
+          set -euo pipefail
+          git -C private-data diff --cached --quiet
+          git -C private-data add -- database.jsonl
+          staged_files="$(git -C private-data diff --cached --name-only)"
+          if [[ "${staged_files}" != "database.jsonl" ]]; then
+            echo "::error::Refusing to commit anything other than database.jsonl."
+            exit 1
+          fi
+          if git -C private-data diff --cached --quiet; then
+            echo "::error::Terminal posting state was reported durable but database.jsonl did not change."
+            exit 1
+          fi
+          git -C private-data commit -m "Checkpoint terminal philosopher post ${{ steps.prepare.outputs.attempt_id }}"
+          if ! git -C private-data push origin HEAD; then
+            echo "::error::Terminal checkpoint push failed. Do not rerun dispatch; the authoritative remote may still be pending and manual reconciliation may be required."
+            exit 1
+          fi
+
+      - name: Explain an unsuccessful dispatch safely
+        if: ${{ always() && steps.dispatch.outcome == 'failure' }}
+        env:
+          TERMINAL_PERSISTED: ${{ steps.dispatch.outputs.persistence_succeeded }}
+        run: |
+          set -euo pipefail
+          if [[ "${TERMINAL_PERSISTED}" == "true" ]]; then
+            echo "Dispatch returned a non-success outcome. Its durable terminal state was checkpointed when the terminal push succeeded. Do not rerun dispatch; reconcile deliberately before preparing another post."
+          else
+            echo "::error::Dispatch did not persist a terminal state. The authoritative remote remains pending. Do not rerun dispatch; inspect and reconcile the pending attempt deliberately."
+          fi

@@ -245,6 +245,41 @@ def save_run_report(
     )
 
 
+def build_posting_phase_report(operation_result, started_at, finished_at):
+    """Return a secret-free auditable record for prepare or dispatch."""
+    if hasattr(operation_result, "as_report"):
+        operation = operation_result.as_report()
+    elif isinstance(operation_result, dict):
+        operation = copy.deepcopy(operation_result)
+    else:
+        raise TypeError("operation_result must provide as_report() or be a dictionary")
+    return {
+        "started_at": _iso_timestamp(started_at),
+        "finished_at": _iso_timestamp(finished_at),
+        "duration_seconds": round(finished_at - started_at, 6),
+        "posting_attempt": operation,
+    }
+
+
+def save_posting_phase_report(
+    report,
+    report_directory,
+    started_at,
+    retention_days=DEFAULT_RETENTION_DAYS,
+    now=None,
+):
+    """Atomically save a prepare/dispatch report independent of bot runs."""
+    return save_json_report(
+        report,
+        report_directory,
+        started_at,
+        retention_days=retention_days,
+        now=now,
+        report_kind="posting-phase",
+        temporary_prefix=".posting-phase-report-",
+    )
+
+
 def save_refresh_report(
     report,
     report_directory,

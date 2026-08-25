@@ -71,10 +71,26 @@ Each canonical entry owns identity fields plus `summary`, `wikidata`,
   one integer Unix timestamp and preserves both existing timestamps and the
   legacy unknown-date marker.
 
-Posting order is candidate selection → message formatting → Telegram send →
-canonical posting persistence on success. Telegram failure makes no posting
-mutation. A post that succeeds externally but fails canonical persistence is
-reported without a `posted.json` fallback, so duplicate-post risk remains.
+Posting order is candidate selection → explicit quote selection → deterministic
+message preparation → Telegram send → canonical posting persistence on
+success. Quote selection retains its existing weighted policy; preparation
+receives that exact quote and produces an immutable payload snapshot containing
+the final HTML text plus quote/message fingerprints. Telegram failure makes no
+posting mutation. A post that succeeds externally but fails canonical
+persistence is reported without a `posted.json` fallback, so duplicate-post
+risk remains.
+
+Durable posting-attempt infrastructure now records an exact prepared message
+under `posting.attempts`. Unattended deployment must use prepare → external
+authoritative checkpoint → dispatch → external authoritative checkpoint.
+`pending`, `failed`, and `unknown` globally block further preparation.
+Operators use `wiki-philosopher-reconcile-post show --attempt-id ID` before
+any intervention: evidence of delivery may mark pending/unknown as sent with a
+Telegram message ID; a definitely unsent pending attempt may be cancelled; a
+definite rejection may be closed to authorize a fresh later prepare; and
+unknown may be cancelled only with explicit unsafe confirmation. No ambiguous
+attempt is automatically resent. Reconciliation uses the same atomic canonical
+rewrite as dispatch and never contacts Telegram.
 
 ## Current persistence, configuration, and HTTP safety
 
@@ -386,11 +402,20 @@ continues handling independent completed futures. It separately catches and
 reports a per-entry persistence `OSError`; that failed title is not marked as
 persisted, while other completed entries continue.
 
-`main.main()` coordinates explicit environment loading, canonical runtime
-loading, discovery, Wikidata lookup, worker evaluation, candidate selection,
-message formatting, Telegram delivery, and canonical posting persistence. No
-database load, API request, executor creation, Telegram request, or file write
-occurs merely because `main.py` is imported.
+`run_unsafe_direct_posting()` retains the legacy one-process flow: explicit
+environment loading, canonical runtime loading, discovery, Wikidata lookup,
+worker evaluation, candidate selection, message preparation, Telegram delivery,
+and canonical posting persistence. `main.main()` now requires the explicit
+`--unsafe-direct-post` flag before invoking that legacy flow. No database load,
+API request, executor creation, Telegram request, or file write occurs merely
+because `main.py` is imported.
+
+The durable posting primitives are deliberately separate. `prepare_post` scans
+for unresolved attempts globally, selects and persists one `pending` attempt,
+and never calls Telegram. An external deployment must checkpoint the canonical
+database before `dispatch_post --attempt-id ...` sends the stored exact message
+once. Dispatch persists `sent`, `failed`, or `unknown` locally; deployment must
+checkpoint again. Core application code does not invoke Git or GitHub.
 
 ## Implemented `database.jsonl` boundary
 
@@ -764,6 +789,26 @@ embedding a second, obsolete schema.
    do not write `"available"` with an empty list for new retrievals.
 5. **Posting history:** retain `posting.posted_at` as an array of timestamps,
    preserving multiple known posts of the same title.
+
+## Posting-attempt infrastructure for unattended execution
+
+The canonical `posting` object may contain an optional append-only `attempts`
+list.  This is infrastructure for a future two-phase unattended-posting flow;
+the current bot does not create or consume attempts yet.
+
+Each attempt records a UUID, the canonical title, deterministic fingerprints of
+the selected structured quote and exact prepared message, UTC timestamps, a
+state, and only safe outcome metadata.  States are `pending`, `sent`,
+`failed`, `unknown`, and `cancelled`.  The existing title-level fields
+`has_been_posted`, `posted_at`, and `legacy_posted_without_timestamp` remain
+the compatibility contract for historical data.
+
+Future orchestration will persist a `pending` attempt before any Telegram call,
+checkpoint it outside the application, send the stored exact message once, and
+persist a terminal state afterward.  `pending`, `failed`, and `unknown` are
+unresolved and must block automatic re-sending.  This supports at-most-once
+automatic sending after an external checkpoint; it does not claim exactly-once
+Telegram delivery.
 
 # Legacy Migration Audit Results
 

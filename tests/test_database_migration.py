@@ -634,6 +634,7 @@ def test_posted_title_creates_posting_only_entry():
         "has_been_posted": True,
         "posted_at": [],
         "legacy_posted_without_timestamp": True,
+        "attempts": [],
     }
     assert POSTED_FILE in entry["migration"]["legacy_sources"]
 
@@ -668,9 +669,10 @@ def test_posted_title_never_invents_timestamp():
 
     assert entry["posting"]["posted_at"] == []
     assert set(entry["posting"]) == {
-        "has_been_posted",
-        "posted_at",
-        "legacy_posted_without_timestamp",
+            "has_been_posted",
+            "posted_at",
+            "legacy_posted_without_timestamp",
+            "attempts",
     }
 
 
@@ -774,6 +776,7 @@ def test_finalize_entry_does_not_mutate_posting_semantics():
         "has_been_posted": True,
         "posted_at": [],
         "legacy_posted_without_timestamp": True,
+        "attempts": [],
     }
 
 
@@ -810,6 +813,7 @@ def test_applying_same_posted_title_twice_does_not_duplicate_provenance():
         "has_been_posted": True,
         "posted_at": [],
         "legacy_posted_without_timestamp": True,
+        "attempts": [],
     }
     assert entry["migration"]["legacy_sources"] == [
         POSTED_FILE

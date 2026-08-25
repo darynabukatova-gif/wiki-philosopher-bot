@@ -1,5 +1,6 @@
 import copy
 import json
+from types import SimpleNamespace
 import wiki_philosopher_bot.main as main
 import pytest
 import threading
@@ -65,13 +66,21 @@ def test_main_returns_zero_when_no_candidate(monkeypatch):
     )
     monkeypatch.setattr(main, "evaluate_pages", lambda **kwargs: None)
     monkeypatch.setattr(main, "select_candidate", lambda state: None)
+    monkeypatch.setattr(main, "select_quote_for_post", lambda *args, **kwargs: pytest.fail("must not select a quote"))
+    monkeypatch.setattr(main, "prepare_philosopher_message", lambda *args, **kwargs: pytest.fail("must not prepare a message"))
+
+    assert main.run_unsafe_direct_posting() == 0
+
+
+def test_main_requires_explicit_opt_in_for_legacy_direct_posting(monkeypatch, capsys):
     monkeypatch.setattr(
         main,
-        "format_philosopher_message",
-        lambda *args, **kwargs: pytest.fail("must not format a message"),
+        "run_unsafe_direct_posting",
+        lambda: pytest.fail("legacy posting must not run by default"),
     )
 
-    assert main.main() == 0
+    assert main.main([]) == 2
+    assert "Direct posting is disabled by default" in capsys.readouterr().out
 
 
 def test_main_calls_environment_loading_before_runtime_startup(monkeypatch):
@@ -102,7 +111,7 @@ def test_main_calls_environment_loading_before_runtime_startup(monkeypatch):
     monkeypatch.setattr(main, "evaluate_pages", lambda **kwargs: None)
     monkeypatch.setattr(main, "select_candidate", lambda state: None)
 
-    assert main.main() == 0
+    assert main.run_unsafe_direct_posting() == 0
     assert events == ["environment", "runtime"]
 
 
@@ -126,7 +135,7 @@ def test_main_writes_run_report_for_no_candidate(monkeypatch, tmp_path):
         type("FixedTime", (), {"time": staticmethod(lambda: 100.0)})(),
     )
 
-    assert main.main() == 0
+    assert main.run_unsafe_direct_posting() == 0
 
     reports = sorted((tmp_path / "reports/runs").glob("*.json"))
     assert len(reports) == 1
@@ -153,7 +162,8 @@ def test_main_writes_run_report_for_telegram_failure(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(main, "evaluate_pages", lambda **kwargs: None)
     monkeypatch.setattr(main, "select_candidate", lambda state: entry)
-    monkeypatch.setattr(main, "format_philosopher_message", lambda *args, **kwargs: "message")
+    monkeypatch.setattr(main, "select_quote_for_post", lambda *args, **kwargs: entry["quotes"]["items"][0])
+    monkeypatch.setattr(main, "prepare_philosopher_message", lambda *args, **kwargs: SimpleNamespace(message_text="message"))
     monkeypatch.setattr(
         main,
         "send_and_record_post",
@@ -165,7 +175,7 @@ def test_main_writes_run_report_for_telegram_failure(monkeypatch, tmp_path):
         type("FixedTime", (), {"time": staticmethod(lambda: 100.0)})(),
     )
 
-    assert main.main() == 1
+    assert main.run_unsafe_direct_posting() == 1
 
     reports = sorted((tmp_path / "reports/runs").glob("*.json"))
     report = json.loads(reports[0].read_text(encoding="utf-8"))
@@ -190,7 +200,8 @@ def test_main_writes_run_report_for_successful_post(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(main, "evaluate_pages", lambda **kwargs: None)
     monkeypatch.setattr(main, "select_candidate", lambda state: entry)
-    monkeypatch.setattr(main, "format_philosopher_message", lambda *args, **kwargs: "message")
+    monkeypatch.setattr(main, "select_quote_for_post", lambda *args, **kwargs: entry["quotes"]["items"][0])
+    monkeypatch.setattr(main, "prepare_philosopher_message", lambda *args, **kwargs: SimpleNamespace(message_text="message"))
     monkeypatch.setattr(
         main,
         "send_and_record_post",
@@ -202,13 +213,57 @@ def test_main_writes_run_report_for_successful_post(monkeypatch, tmp_path):
         type("FixedTime", (), {"time": staticmethod(lambda: 100.0)})(),
     )
 
-    assert main.main() == 0
+    assert main.run_unsafe_direct_posting() == 0
 
     report = json.loads(next((tmp_path / "reports/runs").glob("*.json")).read_text(encoding="utf-8"))
     assert report["posting"] == {
         "selected_title": "Ada",
         "telegram": {"ok": True, "error_reason": None},
     }
+
+
+def test_main_selects_quote_then_prepares_exact_message_before_current_send(monkeypatch):
+    entry = make_postable_entry("Ada")
+    selected_quote = entry["quotes"]["items"][0]
+    state = main.RuntimeState(database={"Ada": entry}, stats=main.make_initial_stats())
+    events = []
+    monkeypatch.setattr(main, "load_environment", lambda: None)
+    monkeypatch.setattr(main, "load_runtime_state", lambda folder: state)
+    monkeypatch.setattr(main, "RateLimiter", lambda rate: object())
+    monkeypatch.setattr(main, "discover_pages", lambda term, limiter: [])
+    monkeypatch.setattr(main, "build_entity_lookup", lambda *args: ({}, {}, {}))
+    monkeypatch.setattr(main, "evaluate_pages", lambda **kwargs: None)
+    monkeypatch.setattr(main, "select_candidate", lambda runtime_state: events.append("candidate") or entry)
+    monkeypatch.setattr(
+        main,
+        "select_quote_for_post",
+        lambda philosopher, *args, **kwargs: events.append("quote") or selected_quote,
+    )
+    monkeypatch.setattr(
+        main,
+        "prepare_philosopher_message",
+        lambda philosopher, quote: (
+            events.append("prepare")
+            or SimpleNamespace(message_text="exact prepared message")
+        ),
+    )
+    monkeypatch.setattr(
+        main,
+        "send_and_record_post",
+        lambda title, message, *args, **kwargs: (
+            events.append(("send", title, message))
+            or TelegramResult(True, {"ok": True}, None)
+        ),
+    )
+
+    assert main.run_unsafe_direct_posting() == 0
+    assert events == [
+        "candidate",
+        "quote",
+        "prepare",
+        ("send", "Ada", "exact prepared message"),
+    ]
+    assert entry["posting"]["attempts"] == []
 
 
 def test_main_reports_ordinary_runtime_failure_then_reraises(monkeypatch, tmp_path):
@@ -228,7 +283,7 @@ def test_main_reports_ordinary_runtime_failure_then_reraises(monkeypatch, tmp_pa
     )
 
     with pytest.raises(RuntimeError, match="discovery failed"):
-        main.main()
+        main.run_unsafe_direct_posting()
 
     reports = sorted((tmp_path / "reports/runs").glob("*.json"))
     assert len(reports) == 1
@@ -482,6 +537,7 @@ def test_canonical_posting_runtime_work_leaves_posted_json_unchanged(
         "has_been_posted": True,
         "posted_at": [1234567890],
         "legacy_posted_without_timestamp": False,
+        "attempts": [],
     }
     assert posted_path.read_bytes() == posted_before
 
@@ -1450,6 +1506,7 @@ def test_send_and_record_post_updates_canonical_posting_only_after_telegram_succ
         "has_been_posted": True,
         "posted_at": [1234567890],
         "legacy_posted_without_timestamp": False,
+        "attempts": [],
     }
     assert database["Ada Lovelace"]["summary"] == before_summary
     assert main.load_database("database.jsonl", str(tmp_path))["Ada Lovelace"][
@@ -1644,6 +1701,7 @@ def test_persist_canonical_posting_sets_posted_state_after_success(
         "has_been_posted": True,
         "posted_at": [1234567890],
         "legacy_posted_without_timestamp": False,
+        "attempts": [],
     }
     assert main.load_database("database.jsonl", str(tmp_path))["Ada Lovelace"][
         "posting"
