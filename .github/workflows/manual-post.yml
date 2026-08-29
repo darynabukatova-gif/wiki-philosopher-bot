@@ -16,7 +16,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out source repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Require private data repository configuration
         env:
@@ -33,7 +33,7 @@ jobs:
           fi
 
       - name: Check out authoritative private data repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: ${{ vars.DATA_REPOSITORY }}
           token: ${{ secrets.DATA_REPO_TOKEN }}
@@ -56,7 +56,7 @@ jobs:
           cp -- private-data/database.jsonl data/database.jsonl
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.11"
 
