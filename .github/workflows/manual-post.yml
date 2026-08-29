@@ -2,6 +2,9 @@ name: Manual philosopher post
 
 on:
   workflow_dispatch:
+  schedule:
+    - cron: '19 16 * * *'
+      timezone: 'Europe/Dublin'
 
 permissions:
   contents: read

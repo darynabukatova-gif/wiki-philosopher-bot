@@ -8,11 +8,12 @@ def workflow_text():
     return WORKFLOW_PATH.read_text(encoding="utf-8")
 
 
-def test_manual_post_workflow_is_manual_and_non_overlapping():
+def test_post_workflow_supports_manual_and_daily_dublin_execution_without_overlap():
     text = workflow_text()
 
     assert "on:\n  workflow_dispatch:" in text
-    assert "schedule:" not in text
+    assert "schedule:\n    - cron: '19 16 * * *'\n      timezone: 'Europe/Dublin'" in text
+    assert text.count("  schedule:") == 1
     assert "group: wiki-philosopher-posting" in text
     assert "cancel-in-progress: false" in text
 

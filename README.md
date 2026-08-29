@@ -76,11 +76,11 @@ wiki-philosopher-dispatch-post --attempt-id <attempt-id>
 ```
 
 The application does not perform that external checkpoint itself. A
-manual-only GitHub Actions workflow is provided for a supervised posting run.
+GitHub Actions workflow can run one posting attempt manually or automatically
+once per day at 16:19 Europe/Dublin time.
 It checks out `database.jsonl` from a separate private authoritative data
 repository, runs prepare, pushes the pending checkpoint, dispatches the exact
-stored attempt once, then pushes the terminal checkpoint. Daily scheduling is
-deliberately not enabled.
+stored attempt once, then pushes the terminal checkpoint.
 
 The workflow expects a repository variable named `DATA_REPOSITORY` with the
 value `owner/private-data-repository`, plus the `DATA_REPO_TOKEN`,
