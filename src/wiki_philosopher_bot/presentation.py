@@ -28,6 +28,27 @@ class PreparedPhilosopherMessage:
     message_fingerprint: str
 
 
+def format_external_reading_links(external_links):
+    """Return compact Telegram HTML links for stored external reading pages.
+
+    These links are record-level reading resources, deliberately separate from
+    the selected quote's bibliographic ``source``. Project Gutenberg is kept
+    in the schema for a later phase and is intentionally not rendered here.
+    """
+    if not isinstance(external_links, dict):
+        return ""
+    available = []
+    for key, label in (("wikiquote", "Wikiquote"), ("wikisource", "Wikisource")):
+        url = external_links.get(key)
+        if isinstance(url, str) and url:
+            available.append(
+                '<a href="{}">{}</a>'.format(
+                    escape(url, quote=True), escape(label, quote=False),
+                )
+            )
+    return " · ".join(available)
+
+
 def normalize_quote_text(text: str) -> str:
     """Conservatively clean display-only spacing in quote text.
 
@@ -172,6 +193,9 @@ def prepare_philosopher_message(philosopher, selected_quote):
     wiki_title = title.replace(" ", "_")
 
     wiki_url = f"https://en.wikipedia.org/wiki/{wiki_title}"
+    external_reading_links = format_external_reading_links(
+        philosopher.get("external_links")
+    )
 
     display_title = philosopher.get("display_title") or clean_title(title)
 
@@ -180,6 +204,7 @@ def prepare_philosopher_message(philosopher, selected_quote):
     attribution = escape(attribution) if attribution else ""
     summary = escape(summary)
 
+    external_line = "\n\n    {}".format(external_reading_links) if external_reading_links else ""
     message = f"""
     <b>{display_title} {years}</b>
 
@@ -189,7 +214,7 @@ def prepare_philosopher_message(philosopher, selected_quote):
 
     {summary}
 
-    <a href="{wiki_url}">Wikipedia article</a>
+    <a href="{wiki_url}">Wikipedia article</a>{external_line}
     """
 
     return PreparedPhilosopherMessage(

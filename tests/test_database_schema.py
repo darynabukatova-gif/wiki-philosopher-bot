@@ -1,4 +1,5 @@
 import wiki_philosopher_bot.database_schema as database_schema
+from wiki_philosopher_bot.cache import load_database
 import pytest
 
 from wiki_philosopher_bot.cli.migrate_database import (
@@ -30,6 +31,7 @@ def test_empty_database_entry_contains_every_required_section():
         "schema_version",
         "title",
         "display_title",
+        "external_links",
         "summary",
         "wikidata",
         "quotes",
@@ -68,6 +70,11 @@ def test_runtime_empty_entry_matches_canonical_schema():
         "schema_version": database_schema.DATABASE_SCHEMA_VERSION,
         "title": "Ada Lovelace (philosopher)",
         "display_title": "Ada Lovelace",
+        "external_links": {
+            "wikiquote": None,
+            "wikisource": None,
+            "project_gutenberg": None,
+        },
         "summary": {
             "text": None,
             "source": "Wikipedia",
@@ -132,6 +139,34 @@ def test_schema_validator_accepts_historical_wikidata_without_death_date():
     del entry["wikidata"]["death_date"]
 
     assert validate_database_entry(entry) == []
+
+
+def test_external_links_are_additive_for_historical_records_and_round_trip(tmp_path):
+    entry = make_empty_database_entry("Historical philosopher")
+    del entry["external_links"]
+
+    assert validate_database_entry(entry) == []
+
+    path = tmp_path / "database.jsonl"
+    path.write_bytes(database_schema.serialize_database_entries([entry]))
+    loaded = load_database("database.jsonl", str(tmp_path))
+    assert loaded == {entry["title"]: entry}
+
+
+def test_schema_validator_accepts_and_validates_external_reading_links():
+    entry = make_empty_database_entry("Ada Lovelace")
+    entry["external_links"].update({
+        "wikiquote": "https://en.wikiquote.org/wiki/Ada_Lovelace",
+        "wikisource": "https://en.wikisource.org/wiki/Author:Ada_Lovelace",
+        "project_gutenberg": "https://www.gutenberg.org/ebooks/123",
+    })
+
+    assert validate_database_entry(entry) == []
+
+    entry["external_links"]["wikisource"] = "https://example.invalid/wiki/Ada"
+    assert "external_links.wikisource must be a canonical English Wikisource URL or null" in (
+        validate_database_entry(entry)
+    )
 
 
 def test_schema_validator_accepts_exact_wikidata_death_date():

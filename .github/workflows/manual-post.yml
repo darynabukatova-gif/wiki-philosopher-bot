@@ -3,7 +3,7 @@ name: Manual philosopher post
 on:
   workflow_dispatch:
   schedule:
-    - cron: '19 16 * * *'
+    - cron: '19 06 * * *'
       timezone: 'Europe/Dublin'
 
 permissions:

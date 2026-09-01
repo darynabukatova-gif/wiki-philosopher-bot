@@ -628,6 +628,42 @@ def test_prepare_entity_captures_day_precision_death_date():
     ] == "2026-06-29"
 
 
+def test_prepare_entity_carries_only_a_positive_english_wikisource_sitelink():
+    entity = _entity_with_claims(["Q5"], ["Q4964182"])
+    entity["sitelinks"] = {
+        "enwikisource": {"site": "enwikisource", "title": "Author:Ada Lovelace"},
+    }
+
+    prepared = evaluation.prepare_entity("Ada", {"Ada": "Q1"}, {"Q1": entity})
+
+    assert prepared["wikisource_url"] == (
+        "https://en.wikisource.org/wiki/Author:Ada_Lovelace"
+    )
+
+
+def test_prepare_entity_cached_persists_wikisource_link_separately_from_wikidata(tmp_path):
+    entry = make_empty_database_entry("Ada Lovelace")
+    database = {entry["title"]: entry}
+    write_canonical_database(tmp_path, [entry])
+    entity = _entity_with_claims(["Q5"], ["Q4964182"])
+    entity["sitelinks"] = {
+        "enwikisource": {"site": "enwikisource", "title": "Author:Ada Lovelace"},
+    }
+
+    evaluation.prepare_entity_cached(
+        "Ada Lovelace", database,
+        {"Ada Lovelace": "Q7259"}, {"Q7259": entity},
+        {"cached_entities": 0, "prepared_entities": 0},
+        threading.Lock(), threading.Lock(), str(tmp_path),
+    )
+
+    assert database["Ada Lovelace"]["external_links"] == {
+        "wikiquote": None,
+        "wikisource": "https://en.wikisource.org/wiki/Author:Ada_Lovelace",
+        "project_gutenberg": None,
+    }
+
+
 def test_unavailable_wikidata_prepares_neutral_facts():
     prepared = evaluation.canonical_wikidata_to_prepared(
         "Ada",

@@ -123,6 +123,18 @@ The installed console commands are:
 - `wiki-philosopher-backup`
 - `wiki-philosopher-refresh-quotes`
 - `wiki-philosopher-refresh-wikidata-dates`
+- `wiki-philosopher-enrich-external-links` defaults to a read-only, networked
+  audit of positively evidenced Wikiquote and English Wikisource links. Apply
+  only an explicitly reviewed report, for example:
+
+  ```bash
+  wiki-philosopher-enrich-external-links \
+    --apply-report reports/external-links/REVIEWED.json
+  ```
+
+  Apply performs no network lookup, validates every proposal against current
+  state, takes one verified pre-operation backup, and atomically writes only
+  the reviewed Wikiquote/Wikisource fields.
 - `wiki-philosopher-check-recent-deaths`
 - `wiki-philosopher-reevaluate`
 - `wiki-philosopher-purge-rejected-quotes`

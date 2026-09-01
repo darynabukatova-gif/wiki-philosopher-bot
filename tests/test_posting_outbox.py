@@ -188,12 +188,20 @@ def test_prepare_no_candidate_is_a_clear_noop(tmp_path):
     assert result.error_kind == "no_candidate"
 
 
-def test_dispatch_sends_exact_stored_payload_once_and_marks_sent(tmp_path):
+def test_dispatch_sends_exact_stored_payload_once_without_repreparing_or_link_lookup(tmp_path, monkeypatch):
     entry = postable_entry()
     database = {entry["title"]: entry}
     write_database(tmp_path, database)
     attempt = append_pending(database, tmp_path)
     messages = []
+    monkeypatch.setattr(
+        outbox, "prepare_philosopher_message",
+        lambda *args, **kwargs: pytest.fail("dispatch must not reprepare the message"),
+    )
+    monkeypatch.setattr(
+        outbox, "select_quote_for_post",
+        lambda *args, **kwargs: pytest.fail("dispatch must not reselect a quote"),
+    )
 
     result = outbox.dispatch_posting_attempt(
         database, attempt["attempt_id"], threading.Lock(), str(tmp_path), "database.jsonl",

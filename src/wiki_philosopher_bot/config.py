@@ -72,6 +72,7 @@ QUOTE_REFRESH_REPORT_FOLDER = "reports/quote-refresh"
 WIKIDATA_DATE_REFRESH_REPORT_FOLDER = "reports/wikidata-date-refresh"
 PURGE_REPORT_FOLDER = "reports/purge"
 RECENT_DEATH_REPORT_FOLDER = "reports/recent-deaths"
+EXTERNAL_LINK_REPORT_FOLDER = "reports/external-links"
 
 # Version 2 adds conservative direct-biographical philosopher evidence and
 # neutral Wikidata absence-of-claim semantics.

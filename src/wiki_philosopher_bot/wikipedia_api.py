@@ -8,9 +8,10 @@ import requests
 import threading
 from typing import Optional
 from bs4 import BeautifulSoup
-from urllib.parse import quote, urljoin
+from urllib.parse import quote, urljoin, urlsplit, urlunsplit
 from dataclasses import dataclass
 from wiki_philosopher_bot.cache import update_database_entry
+from wiki_philosopher_bot.database_schema import empty_external_links
 from wiki_philosopher_bot.utils import (
     chunk_list, 
     calculate_backoff, 
@@ -1671,11 +1672,11 @@ def get_wikidata_ids_batch(titles, limiter=None):
     )
 
 def get_wikidata_entities_batch(qids, limiter=None):
-    """Fetch entity claims without unrelated labels, aliases, or sitelinks."""
+    """Fetch entity claims and the one sitelink family used for reading links."""
     params = {
         "action": "wbgetentities",
         "ids": "|".join(qids),
-        "props": "claims",
+        "props": "claims|sitelinks",
         "format": "json",
     }
 
@@ -1948,6 +1949,95 @@ def get_life_dates_from_wikidata(entity):
 
     return birth, death, death_date
 
+
+def get_english_wikisource_sitelink_title(entity):
+    """Return the exact English Wikisource sitelink title, if Wikidata has one."""
+    if not isinstance(entity, dict):
+        return None
+    sitelinks = entity.get("sitelinks")
+    if not isinstance(sitelinks, dict):
+        return None
+    sitelink = sitelinks.get("enwikisource")
+    if not isinstance(sitelink, dict):
+        return None
+    title = sitelink.get("title")
+    if not isinstance(title, str) or not title.strip():
+        return None
+    if "#" in title or "?" in title:
+        return None
+    return title.strip()
+
+
+def get_english_wikisource_sitelink(entity):
+    """Return a canonical English Wikisource URL only from a real sitelink.
+
+    Wikidata supplies the exact sitelink title.  This deliberately does not
+    infer an ``Author:`` page from a philosopher name when no sitelink exists.
+    """
+    title = get_english_wikisource_sitelink_title(entity)
+    if title is None:
+        return None
+    encoded_title = quote(title.strip().replace(" ", "_"), safe=":/")
+    return "https://en.wikisource.org/wiki/{}".format(encoded_title)
+
+
+def canonical_wikiquote_page_url(response):
+    """Return the final positively fetched English Wikiquote page URL.
+
+    The quote pipeline has already made this request and followed redirects.
+    No additional search or title-derived fallback is used here.
+    """
+    candidate = getattr(response, "url", None)
+    if not isinstance(candidate, str) or not candidate:
+        return None
+    try:
+        parsed = urlsplit(candidate)
+    except ValueError:
+        return None
+    if (
+        parsed.scheme not in ("http", "https")
+        or parsed.netloc != "en.wikiquote.org"
+        or not parsed.path.startswith("/wiki/")
+        or len(parsed.path) <= len("/wiki/")
+    ):
+        return None
+    return urlunsplit(("https", "en.wikiquote.org", parsed.path, "", ""))
+
+
+def lookup_wikiquote_external_link(title, limiter=None):
+    """Read-only positive-evidence lookup for one English Wikiquote page.
+
+    A title-derived request is only a lookup candidate.  The returned URL is
+    accepted solely after a successful response, an actual quote parse, and
+    validation of the final redirect-resolved English Wikiquote response URL.
+    This helper never mutates a quote cache or a canonical database entry.
+    """
+    if not isinstance(title, str) or not title.strip():
+        return None, "invalid_title"
+
+    request_result = safe_request(
+        "{}{}".format(WIKIQUOTE_URL, quote(title.strip().replace(" ", "_"))),
+        limiter=limiter,
+    )
+    if not request_result.ok:
+        return None, request_result.error_reason or QUOTE_FAILURE_REQUEST_EXCEPTION
+    response = request_result.response
+    if response is None:
+        return None, QUOTE_FAILURE_REQUEST_EXCEPTION
+
+    soup = BeautifulSoup(response.text, "html.parser")
+    content = soup.find("div", class_="mw-parser-output")
+    if content is None:
+        return None, QUOTE_FAILURE_PARSING_ERROR
+
+    for candidate in iter_wikiquote_quote_candidates(content):
+        if not is_bad_quote(extract_wikiquote_candidate_text(candidate.element)):
+            final_url = canonical_wikiquote_page_url(response)
+            if final_url is not None:
+                return final_url, None
+            return None, "invalid_final_url"
+    return None, QUOTE_FAILURE_NO_QUOTES_FOUND
+
 def quote_retry_base_days(reason):
     if reason in ("rate_limit", QUOTE_FAILURE_HTTP_429):
         return 1
@@ -2193,6 +2283,8 @@ def get_quotes(
 
     if quotes:
 
+        wikiquote_url = canonical_wikiquote_page_url(response)
+
         def update_quotes(entry):
             entry["quotes"] = {
                 "status": "available",
@@ -2201,6 +2293,12 @@ def get_quotes(
                 "fetched_at": int(time.time()),
                 "parser_version": CURRENT_QUOTE_PARSER_VERSION,
             }
+            if wikiquote_url is not None:
+                external_links = entry.setdefault(
+                    "external_links",
+                    empty_external_links(),
+                )
+                external_links["wikiquote"] = wikiquote_url
 
         update_database_entry(
             database,

@@ -4,6 +4,7 @@ import unicodedata
 from typing import List
 from dataclasses import dataclass, field
 from wiki_philosopher_bot.cache import update_database_entry
+from wiki_philosopher_bot.database_schema import empty_external_links
 from wiki_philosopher_bot.config import (
     CURRENT_EVALUATION_ALGORITHM_VERSION,
     DATABASE_FILE,
@@ -17,6 +18,7 @@ from wiki_philosopher_bot.wikipedia_api import (
     get_quotes, 
     get_summary, 
     get_life_dates_from_wikidata,
+    get_english_wikisource_sitelink,
 )
 
 @dataclass
@@ -134,6 +136,7 @@ def prepare_entity(title, all_qids, all_entities, wikidata_errors=None):
     occupations = get_occupations(entity)
 
     birth, death, death_date = get_life_dates_from_wikidata(entity)
+    wikisource_url = get_english_wikisource_sitelink(entity)
 
     prepared = {
         "valid": True,
@@ -146,6 +149,7 @@ def prepare_entity(title, all_qids, all_entities, wikidata_errors=None):
         "birth": birth,
         "death": death,
         "death_date": death_date,
+        "wikisource_url": wikisource_url,
 
         # Absence of either QID is not contradictory evidence.  A title may
         # simply have incomplete Wikidata claims, so keep unresolved facts
@@ -258,6 +262,9 @@ def prepare_entity_cached(
 
     def update_wikidata(entry):
         entry["wikidata"] = prepared_entity_to_canonical_wikidata(prepared)
+        if "external_links" not in entry:
+            entry["external_links"] = empty_external_links()
+        entry["external_links"]["wikisource"] = prepared.get("wikisource_url")
 
     update_database_entry(
         database=database,

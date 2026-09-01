@@ -7,9 +7,102 @@ import uuid
 from copy import deepcopy
 from datetime import date, datetime, timezone
 from typing import List
+from urllib.parse import urlsplit
 
 
 DATABASE_SCHEMA_VERSION = 1
+
+
+EXTERNAL_LINK_KEYS = (
+    "wikiquote",
+    "wikisource",
+    "project_gutenberg",
+)
+
+
+def empty_external_links():
+    """Return the additive, source-neutral external reading-link shape."""
+    return {key: None for key in EXTERNAL_LINK_KEYS}
+
+
+def _safe_urlsplit(value):
+    try:
+        return urlsplit(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _is_canonical_wikimedia_link(value, hostname):
+    if not isinstance(value, str) or not value:
+        return False
+    parsed = _safe_urlsplit(value)
+    if parsed is None:
+        return False
+    return (
+        parsed.scheme == "https"
+        and parsed.netloc == hostname
+        and parsed.path.startswith("/wiki/")
+        and len(parsed.path) > len("/wiki/")
+        and not parsed.query
+        and not parsed.fragment
+    )
+
+
+def is_valid_external_link(key, value):
+    """Return whether one optional external-reading link is canonical.
+
+    This is deliberately also usable by read-only enrichment audits.  It does
+    not coerce or repair values: a proposed link must already satisfy the
+    canonical storage contract before an operator can consider applying it.
+    """
+    if key == "wikiquote":
+        return value is None or _is_canonical_wikimedia_link(
+            value, "en.wikiquote.org"
+        )
+    if key == "wikisource":
+        return value is None or _is_canonical_wikimedia_link(
+            value, "en.wikisource.org"
+        )
+    if key == "project_gutenberg":
+        if value is None:
+            return True
+        parsed = _safe_urlsplit(value) if isinstance(value, str) else None
+        return bool(
+            isinstance(value, str)
+            and value
+            and parsed is not None
+            and parsed.scheme == "https"
+            and parsed.netloc
+        )
+    return False
+
+
+def _validate_external_links(external_links):
+    """Validate an optional canonical record-level external-links section."""
+    if not isinstance(external_links, dict):
+        return ["external_links must be an object"]
+
+    errors = []
+    expected = set(EXTERNAL_LINK_KEYS)
+    # Individual reading-link keys are additive too. This lets a carefully
+    # scoped enrichment add Wikiquote/Wikisource without manufacturing a
+    # Project Gutenberg field for historical records.
+    unexpected = set(external_links) - expected
+    if unexpected:
+        errors.append("external_links has unexpected fields")
+
+    wikiquote = external_links.get("wikiquote")
+    if not is_valid_external_link("wikiquote", wikiquote):
+        errors.append("external_links.wikiquote must be a canonical English Wikiquote URL or null")
+
+    wikisource = external_links.get("wikisource")
+    if not is_valid_external_link("wikisource", wikisource):
+        errors.append("external_links.wikisource must be a canonical English Wikisource URL or null")
+
+    gutenberg = external_links.get("project_gutenberg")
+    if not is_valid_external_link("project_gutenberg", gutenberg):
+        errors.append("external_links.project_gutenberg must be an HTTPS URL or null")
+    return errors
 
 
 POSTING_ATTEMPT_STATES = frozenset(
@@ -350,6 +443,7 @@ def make_empty_database_entry(title: str) -> dict:
         "schema_version": DATABASE_SCHEMA_VERSION,
         "title": title,
         "display_title": display_title,
+        "external_links": empty_external_links(),
         "summary": {
             "text": None,
             "source": "Wikipedia",
@@ -484,6 +578,11 @@ def validate_database_entry(entry: dict) -> List[str]:
         errors.append(
             "display_title must be a non-empty string"
         )
+
+    # This section was introduced additively. Historical records that omit it
+    # remain valid and behave as if all external links were unavailable.
+    if "external_links" in entry:
+        errors.extend(_validate_external_links(entry["external_links"]))
 
     summary = entry["summary"]
 

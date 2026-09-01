@@ -153,14 +153,18 @@ def candidate_selection_weight(entry):
 
     return max(raw_content, -1) + 2
 
-def get_random_philosopher(
-    database,
-    chooser=random.choices,
-):
-    philosophers = [
-        entry
-        for entry in database.values()
-        if isinstance(entry, dict)
+
+def is_posting_candidate(entry):
+    """Whether *entry* satisfies the bot's existing posting predicate.
+
+    Keep this deliberately narrow and data-only: unresolved outbox attempts
+    are a separate global operation guard, not candidate-selection semantics.
+    Both random selection and read-only enrichment audits use this exact
+    predicate so they cannot drift into competing definitions of philosopher
+    eligibility.
+    """
+    return (
+        isinstance(entry, dict)
         and isinstance(entry.get("title"), str)
         and isinstance(entry.get("evaluation"), dict)
         and entry["evaluation"].get("status") == "accepted"
@@ -172,6 +176,16 @@ def get_random_philosopher(
         == CURRENT_QUOTE_PARSER_VERSION
         and isinstance(entry.get("posting"), dict)
         and entry["posting"].get("has_been_posted") is False
+    )
+
+def get_random_philosopher(
+    database,
+    chooser=random.choices,
+):
+    philosophers = [
+        entry
+        for entry in database.values()
+        if is_posting_candidate(entry)
     ]
 
     if not philosophers:

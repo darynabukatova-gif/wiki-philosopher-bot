@@ -34,6 +34,7 @@ wiki-philosopher-refresh-wikidata-dates = "wiki_philosopher_bot.cli.refresh_wiki
 wiki-philosopher-prepare-post = "wiki_philosopher_bot.cli.prepare_post:main"
 wiki-philosopher-dispatch-post = "wiki_philosopher_bot.cli.dispatch_post:main"
 wiki-philosopher-reconcile-post = "wiki_philosopher_bot.cli.reconcile_post:main"
+wiki-philosopher-enrich-external-links = "wiki_philosopher_bot.cli.enrich_external_links:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}

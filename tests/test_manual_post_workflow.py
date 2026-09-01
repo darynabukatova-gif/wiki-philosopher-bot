@@ -12,7 +12,7 @@ def test_post_workflow_supports_manual_and_daily_dublin_execution_without_overla
     text = workflow_text()
 
     assert "on:\n  workflow_dispatch:" in text
-    assert "schedule:\n    - cron: '19 16 * * *'\n      timezone: 'Europe/Dublin'" in text
+    assert "schedule:\n    - cron: '19 06 * * *'\n      timezone: 'Europe/Dublin'" in text
     assert text.count("  schedule:") == 1
     assert "group: wiki-philosopher-posting" in text
     assert "cancel-in-progress: false" in text

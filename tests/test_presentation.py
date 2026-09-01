@@ -334,6 +334,56 @@ def test_prepare_philosopher_message_is_deterministic_and_snapshots_selected_quo
     assert first.selected_quote["text"] == "A canonical quote."
 
 
+def test_prepare_message_renders_stored_wikiquote_link_only():
+    philosopher = make_empty_database_entry("Ada Lovelace")
+    philosopher["external_links"]["wikiquote"] = (
+        "https://en.wikiquote.org/wiki/Ada_Lovelace"
+    )
+
+    message = presentation.prepare_philosopher_message(
+        philosopher, structured_quote("A canonical quote."),
+    ).message_text
+
+    assert '<a href="https://en.wikiquote.org/wiki/Ada_Lovelace">Wikiquote</a>' in message
+    assert "Wikisource" not in message
+    assert "Project Gutenberg" not in message
+
+
+def test_prepare_message_renders_wikiquote_and_wikisource_as_final_reading_line():
+    philosopher = make_empty_database_entry("Ada Lovelace")
+    philosopher["external_links"].update({
+        "wikiquote": "https://en.wikiquote.org/wiki/Ada_Lovelace",
+        "wikisource": "https://en.wikisource.org/wiki/Author:Ada_Lovelace",
+    })
+
+    prepared = presentation.prepare_philosopher_message(
+        philosopher, structured_quote("A canonical quote."),
+    )
+    repeated = presentation.prepare_philosopher_message(
+        philosopher, structured_quote("A canonical quote."),
+    )
+
+    assert (
+        '<a href="https://en.wikiquote.org/wiki/Ada_Lovelace">Wikiquote</a> · '
+        '<a href="https://en.wikisource.org/wiki/Author:Ada_Lovelace">Wikisource</a>'
+    ) in prepared.message_text
+    assert prepared.message_fingerprint == database_schema.message_fingerprint(
+        prepared.message_text
+    )
+    assert repeated == prepared
+
+
+def test_external_reading_link_renderer_escapes_urls_and_omits_unavailable_values():
+    rendered = presentation.format_external_reading_links({
+        "wikiquote": "https://en.wikiquote.org/wiki/Ada?one=1&two=2",
+        "wikisource": None,
+    })
+
+    assert rendered == (
+        '<a href="https://en.wikiquote.org/wiki/Ada?one=1&amp;two=2">Wikiquote</a>'
+    )
+
+
 def test_prepare_philosopher_message_changes_with_selected_quote_and_rejects_invalid_quote():
     philosopher = make_empty_database_entry("Ada Lovelace")
     first = presentation.prepare_philosopher_message(

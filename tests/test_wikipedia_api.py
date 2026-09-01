@@ -18,11 +18,12 @@ def write_canonical_database(tmp_path, entries):
     return path
 
 class FakeResponse:
-    def __init__(self, status_code=200, payload=None, text="", json_error=None):
+    def __init__(self, status_code=200, payload=None, text="", json_error=None, url=None):
         self.status_code = status_code
         self.payload = payload if payload is not None else {}
         self.text = text
         self.json_error = json_error
+        self.url = url
 
     def json(self):
         if self.json_error is not None:
@@ -709,7 +710,7 @@ def test_get_wikidata_entities_batch_returns_empty_dict_when_entities_missing(
     assert result.error_reason == "malformed_response"
 
 
-def test_get_wikidata_entities_batch_requests_claims_only(monkeypatch):
+def test_get_wikidata_entities_batch_requests_claims_and_sitelinks(monkeypatch):
     captured = {}
     response = FakeResponse(payload={"entities": {"Q7259": {"claims": {}}}})
 
@@ -722,7 +723,7 @@ def test_get_wikidata_entities_batch_requests_claims_only(monkeypatch):
     result = wikipedia_api.get_wikidata_entities_batch(["Q7259"])
 
     assert result.error_reason is None
-    assert captured["params"]["props"] == "claims"
+    assert captured["params"]["props"] == "claims|sitelinks"
 
 def test_build_entity_cache_keeps_successful_batches_on_partial_failure(
     monkeypatch,
@@ -1129,6 +1130,66 @@ def test_get_wikidata_entities_batch_returns_empty_dict_for_invalid_json(
 
     assert result.data == {}
     assert result.error_reason == "invalid_json"
+
+
+def test_english_wikisource_url_requires_the_exact_wikidata_sitelink():
+    entity = {
+        "sitelinks": {
+            "enwikisource": {"site": "enwikisource", "title": "Author:Ada Lovelace"},
+        },
+    }
+
+    assert wikipedia_api.get_english_wikisource_sitelink(entity) == (
+        "https://en.wikisource.org/wiki/Author:Ada_Lovelace"
+    )
+    assert wikipedia_api.get_english_wikisource_sitelink({"sitelinks": {}}) is None
+    assert wikipedia_api.get_english_wikisource_sitelink({}) is None
+
+
+def test_canonical_wikiquote_url_uses_only_the_final_fetched_page_identity():
+    response = FakeResponse(url="https://en.wikiquote.org/wiki/Ada_Lovelace?oldformat=true#Quotes")
+
+    assert wikipedia_api.canonical_wikiquote_page_url(response) == (
+        "https://en.wikiquote.org/wiki/Ada_Lovelace"
+    )
+    assert wikipedia_api.canonical_wikiquote_page_url(FakeResponse()) is None
+
+
+def test_read_only_wikiquote_external_link_lookup_requires_parse_and_uses_final_redirect(monkeypatch):
+    html = """
+    <div class="mw-parser-output"><h2><span class="mw-headline">Quotes</span></h2>
+      <ul><li>{}</li></ul>
+    </div>
+    """.format(SECTION_QUOTE)
+    monkeypatch.setattr(
+        wikipedia_api,
+        "safe_request",
+        lambda *args, **kwargs: success_result(FakeResponse(
+            text=html,
+            url="https://en.wikiquote.org/wiki/Ada_(philosopher)?oldformat=true",
+        )),
+    )
+
+    url, reason = wikipedia_api.lookup_wikiquote_external_link("Ada")
+
+    assert (url, reason) == (
+        "https://en.wikiquote.org/wiki/Ada_(philosopher)", None,
+    )
+
+
+def test_read_only_wikiquote_external_link_lookup_rejects_successful_but_empty_parse(monkeypatch):
+    monkeypatch.setattr(
+        wikipedia_api,
+        "safe_request",
+        lambda *args, **kwargs: success_result(FakeResponse(
+            text='<div class="mw-parser-output"><p>No quotations.</p></div>',
+            url="https://en.wikiquote.org/wiki/Ada",
+        )),
+    )
+
+    assert wikipedia_api.lookup_wikiquote_external_link("Ada") == (
+        None, wikipedia_api.QUOTE_FAILURE_NO_QUOTES_FOUND,
+    )
 
 @pytest.mark.parametrize(
     "reason, expected_days",
@@ -3375,6 +3436,35 @@ def test_purged_quotes_trigger_fresh_current_parser_fetch(monkeypatch, tmp_path)
     assert quotes
     assert database["Ada"]["quotes"]["status"] == "available"
     assert database["Ada"]["quotes"]["parser_version"] == CURRENT_QUOTE_PARSER_VERSION
+
+
+def test_successful_quote_fetch_stores_only_the_final_identified_wikiquote_url(monkeypatch, tmp_path):
+    entry = make_empty_database_entry("Ada")
+    database = {"Ada": entry}
+    write_canonical_database(tmp_path, [entry])
+    html = """
+    <div class="mw-parser-output"><h2><span class="mw-headline" id="Quotes">Quotes</span></h2>
+      <ul><li>{}</li></ul>
+    </div>
+    """.format(SECTION_QUOTE)
+    monkeypatch.setattr(
+        wikipedia_api,
+        "safe_request",
+        lambda *args, **kwargs: success_result(FakeResponse(
+            text=html,
+            url="https://en.wikiquote.org/wiki/Ada_(philosopher)?oldformat=true",
+        )),
+    )
+
+    wikipedia_api.get_quotes(
+        "Ada", database, quote_stats(), threading.Lock(), threading.Lock(), str(tmp_path),
+    )
+
+    assert database["Ada"]["external_links"] == {
+        "wikiquote": "https://en.wikiquote.org/wiki/Ada_(philosopher)",
+        "wikisource": None,
+        "project_gutenberg": None,
+    }
 
 
 def test_stale_ernst_mach_refresh_replaces_false_commentary_and_sets_parser_version(
