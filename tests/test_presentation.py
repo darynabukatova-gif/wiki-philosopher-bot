@@ -346,14 +346,15 @@ def test_prepare_message_renders_stored_wikiquote_link_only():
 
     assert '<a href="https://en.wikiquote.org/wiki/Ada_Lovelace">Wikiquote</a>' in message
     assert "Wikisource" not in message
-    assert "Project Gutenberg" not in message
+    assert "Gutenberg" not in message
 
 
-def test_prepare_message_renders_wikiquote_and_wikisource_as_final_reading_line():
+def test_prepare_message_renders_all_external_reading_links_as_final_line():
     philosopher = make_empty_database_entry("Ada Lovelace")
     philosopher["external_links"].update({
         "wikiquote": "https://en.wikiquote.org/wiki/Ada_Lovelace",
         "wikisource": "https://en.wikisource.org/wiki/Author:Ada_Lovelace",
+        "project_gutenberg": "https://www.gutenberg.org/ebooks/author/380",
     })
 
     prepared = presentation.prepare_philosopher_message(
@@ -365,12 +366,59 @@ def test_prepare_message_renders_wikiquote_and_wikisource_as_final_reading_line(
 
     assert (
         '<a href="https://en.wikiquote.org/wiki/Ada_Lovelace">Wikiquote</a> · '
-        '<a href="https://en.wikisource.org/wiki/Author:Ada_Lovelace">Wikisource</a>'
+        '<a href="https://en.wikisource.org/wiki/Author:Ada_Lovelace">Wikisource</a> · '
+        '<a href="https://www.gutenberg.org/ebooks/author/380">Gutenberg</a>'
     ) in prepared.message_text
     assert prepared.message_fingerprint == database_schema.message_fingerprint(
         prepared.message_text
     )
     assert repeated == prepared
+
+
+@pytest.mark.parametrize(
+    ("links", "expected"),
+    [
+        (
+            {
+                "wikiquote": "https://en.wikiquote.org/wiki/Ada",
+                "wikisource": "https://en.wikisource.org/wiki/Author:Ada",
+                "project_gutenberg": "https://www.gutenberg.org/ebooks/author/380",
+            },
+            '<a href="https://en.wikiquote.org/wiki/Ada">Wikiquote</a> · '
+            '<a href="https://en.wikisource.org/wiki/Author:Ada">Wikisource</a> · '
+            '<a href="https://www.gutenberg.org/ebooks/author/380">Gutenberg</a>',
+        ),
+        (
+            {
+                "wikiquote": "https://en.wikiquote.org/wiki/Ada",
+                "project_gutenberg": "https://www.gutenberg.org/ebooks/author/380",
+            },
+            '<a href="https://en.wikiquote.org/wiki/Ada">Wikiquote</a> · '
+            '<a href="https://www.gutenberg.org/ebooks/author/380">Gutenberg</a>',
+        ),
+        (
+            {
+                "wikisource": "https://en.wikisource.org/wiki/Author:Ada",
+                "project_gutenberg": "https://www.gutenberg.org/ebooks/author/380",
+            },
+            '<a href="https://en.wikisource.org/wiki/Author:Ada">Wikisource</a> · '
+            '<a href="https://www.gutenberg.org/ebooks/author/380">Gutenberg</a>',
+        ),
+        (
+            {"project_gutenberg": "https://www.gutenberg.org/ebooks/author/380"},
+            '<a href="https://www.gutenberg.org/ebooks/author/380">Gutenberg</a>',
+        ),
+        ({}, ""),
+    ],
+)
+def test_external_reading_link_renderer_supports_every_available_combination(links, expected):
+    assert presentation.format_external_reading_links(links) == expected
+
+
+def test_external_reading_link_renderer_omits_invalid_gutenberg_value():
+    assert presentation.format_external_reading_links({
+        "project_gutenberg": "http://www.gutenberg.org/ebooks/author/380",
+    }) == ""
 
 
 def test_external_reading_link_renderer_escapes_urls_and_omits_unavailable_values():
@@ -382,6 +430,22 @@ def test_external_reading_link_renderer_escapes_urls_and_omits_unavailable_value
     assert rendered == (
         '<a href="https://en.wikiquote.org/wiki/Ada?one=1&amp;two=2">Wikiquote</a>'
     )
+
+
+def test_prepared_message_fingerprint_includes_stored_gutenberg_link():
+    philosopher = make_empty_database_entry("Ada Lovelace")
+    quote = structured_quote("A canonical quote.")
+    without_gutenberg = presentation.prepare_philosopher_message(philosopher, quote)
+    philosopher["external_links"]["project_gutenberg"] = (
+        "https://www.gutenberg.org/ebooks/author/380"
+    )
+    with_gutenberg = presentation.prepare_philosopher_message(philosopher, quote)
+
+    assert '<a href="https://www.gutenberg.org/ebooks/author/380">Gutenberg</a>' in with_gutenberg.message_text
+    assert with_gutenberg.message_fingerprint == database_schema.message_fingerprint(
+        with_gutenberg.message_text
+    )
+    assert with_gutenberg.message_fingerprint != without_gutenberg.message_fingerprint
 
 
 def test_prepare_philosopher_message_changes_with_selected_quote_and_rejects_invalid_quote():

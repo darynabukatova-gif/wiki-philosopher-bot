@@ -6,6 +6,7 @@ import re
 from wiki_philosopher_bot.utils import clean_title
 from wiki_philosopher_bot.config import MAX_QUOTES
 from wiki_philosopher_bot.database_schema import (
+    is_valid_external_link,
     message_fingerprint,
     quote_fingerprint,
 )
@@ -32,15 +33,29 @@ def format_external_reading_links(external_links):
     """Return compact Telegram HTML links for stored external reading pages.
 
     These links are record-level reading resources, deliberately separate from
-    the selected quote's bibliographic ``source``. Project Gutenberg is kept
-    in the schema for a later phase and is intentionally not rendered here.
+    the selected quote's bibliographic ``source``.
     """
     if not isinstance(external_links, dict):
         return ""
     available = []
-    for key, label in (("wikiquote", "Wikiquote"), ("wikisource", "Wikisource")):
+    for key, label in (
+        ("wikiquote", "Wikiquote"),
+        ("wikisource", "Wikisource"),
+        ("project_gutenberg", "Gutenberg"),
+    ):
         url = external_links.get(key)
-        if isinstance(url, str) and url:
+        # Preserve established Wikiquote/Wikisource rendering, including URLs
+        # with escaped query strings. Gutenberg has no legacy presentation
+        # behaviour, so admit it only when its stored schema value is valid.
+        valid_for_presentation = (
+            isinstance(url, str)
+            and bool(url)
+            and (
+                key != "project_gutenberg"
+                or is_valid_external_link(key, url)
+            )
+        )
+        if valid_for_presentation:
             available.append(
                 '<a href="{}">{}</a>'.format(
                     escape(url, quote=True), escape(label, quote=False),
