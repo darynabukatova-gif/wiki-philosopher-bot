@@ -2,6 +2,7 @@ import os
 import json
 import copy
 import hashlib
+import shutil
 import tempfile
 import re
 import time
@@ -355,6 +356,81 @@ def rewrite_database(
             filename,
             data_folder,
         )
+
+
+def database_file_sha256(filename, data_folder):
+    """Return the SHA-256 of one existing canonical database file."""
+    sha256, _ = _hash_file(get_data_path(filename, data_folder))
+    return sha256
+
+
+def replace_database_from_validated_source(
+    source_path,
+    filename,
+    data_folder,
+    persistence_lock,
+):
+    """Atomically replace a canonical database with an exact validated copy.
+
+    This is deliberately a byte-preserving operation, unlike
+    :func:`rewrite_database`, so a local replica can be proven identical to a
+    separately maintained authoritative canonical snapshot.
+    """
+    source_path = Path(source_path)
+    target_path = Path(get_data_path(filename, data_folder))
+    if not source_path.is_file():
+        raise ValueError("Source database does not exist or is not a regular file")
+    if not target_path.parent.is_dir():
+        raise ValueError("Database output directory does not exist: {}".format(target_path.parent))
+    if source_path.resolve() == target_path.resolve():
+        raise ValueError("Refusing to replace a database from itself")
+
+    source_database = load_database(source_path.name, str(source_path.parent))
+    expected_titles = set(source_database)
+    source_sha256, source_size = _hash_file(source_path)
+
+    with persistence_lock:
+        temporary_path = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="wb",
+                prefix=".database-sync-",
+                suffix=".tmp",
+                dir=str(target_path.parent),
+                delete=False,
+            ) as temporary_file:
+                temporary_path = Path(temporary_file.name)
+                with source_path.open("rb") as source_handle:
+                    shutil.copyfileobj(source_handle, temporary_file)
+                temporary_file.flush()
+                os.fsync(temporary_file.fileno())
+
+            temporary_sha256, temporary_size = _hash_file(temporary_path)
+            final_source_sha256, final_source_size = _hash_file(source_path)
+            if (
+                temporary_sha256 != source_sha256
+                or temporary_size != source_size
+                or final_source_sha256 != source_sha256
+                or final_source_size != source_size
+            ):
+                raise RuntimeError("Source database changed or copy verification failed")
+            _validate_serialized_database_file(temporary_path, expected_titles)
+
+            os.replace(str(temporary_path), str(target_path))
+            temporary_path = None
+            _fsync_directory(target_path.parent)
+
+            target_sha256, target_size = _hash_file(target_path)
+            if target_sha256 != source_sha256 or target_size != source_size:
+                raise RuntimeError("Synchronized database does not match source bytes")
+            _validate_serialized_database_file(target_path, expected_titles)
+            return target_sha256
+        finally:
+            if temporary_path is not None:
+                try:
+                    temporary_path.unlink()
+                except FileNotFoundError:
+                    pass
 
 
 def upsert_entry(

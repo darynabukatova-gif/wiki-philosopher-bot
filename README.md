@@ -94,6 +94,22 @@ dispatch step or a new post run: the authoritative database may still contain
 `pending`, `unknown`, or `failed` state. Inspect and reconcile the exact
 attempt first.
 
+Before a manual local prepare, synchronize the source checkout's local
+database from the separate private authoritative checkout:
+
+```bash
+wiki-philosopher-sync-local-data --update-private-repo --dry-run
+wiki-philosopher-sync-local-data --update-private-repo
+```
+
+The command is one-way: private data repository to local `data/database.jsonl`.
+It refuses dirty, ahead, behind, or diverged private checkouts unless the
+explicit fast-forward update succeeds. It also refuses to discard local-only
+canonical state by default; inspect the JSON output and reconcile it, or use
+`--force-replace-local` deliberately. Set `PRIVATE_DATA_REPOSITORY_FOLDER` or
+pass `--private-data-repo PATH` when the private checkout is not the default
+sibling directory.
+
 ### Posting-attempt reconciliation
 
 Posting attempts are deliberately never resent automatically after an

@@ -64,6 +64,11 @@ POSTED_FILE = "posted.json"
 DATABASE_FILE = "database.jsonl"
 DATABASE_BACKUP_FOLDER = "backups/database"
 MIGRATION_BACKUP_FOLDER = "backups/migration"
+# The private authoritative database checkout is a sibling of the source
+# repository by default. Override this non-secret local path when needed.
+PRIVATE_DATA_REPOSITORY_FOLDER = os.getenv(
+    "PRIVATE_DATA_REPOSITORY_FOLDER", "../wiki-philosopher-bot-data"
+)
 OPERATIONAL_BACKUP_RETENTION_DAYS = 90
 
 RUN_REPORT_FOLDER = "reports/runs"
@@ -73,6 +78,7 @@ WIKIDATA_DATE_REFRESH_REPORT_FOLDER = "reports/wikidata-date-refresh"
 PURGE_REPORT_FOLDER = "reports/purge"
 RECENT_DEATH_REPORT_FOLDER = "reports/recent-deaths"
 EXTERNAL_LINK_REPORT_FOLDER = "reports/external-links"
+LOCAL_DATA_SYNC_REPORT_FOLDER = "reports/local-data-sync"
 
 # Version 2 adds conservative direct-biographical philosopher evidence and
 # neutral Wikidata absence-of-claim semantics.
