@@ -16,7 +16,11 @@ from wiki_philosopher_bot.database_schema import (
     is_valid_external_link,
 )
 from wiki_philosopher_bot.cache import rewrite_database
-from wiki_philosopher_bot.utils import chunk_list, is_posting_candidate
+from wiki_philosopher_bot.utils import (
+    chunk_list,
+    is_posting_candidate,
+    is_semantically_postable_philosopher,
+)
 from wiki_philosopher_bot.wikipedia_api import (
     get_english_wikisource_sitelink,
     get_english_wikisource_sitelink_title,
@@ -52,12 +56,102 @@ def _valid_value(key, value):
 
 
 _QID_RE = re.compile(r"^Q[1-9][0-9]*$")
+PROJECT_GUTENBERG_AUTHOR_ID_PROPERTY = "P1938"
+PROJECT_GUTENBERG_AUTHOR_ID_PATTERN = re.compile(r"^[1-9][0-9]{0,4}$")
+PROJECT_GUTENBERG_AUTHOR_URL_FORMATTER = (
+    "https://gutenberg.org/ebooks/author/$1"
+)
+_PROJECT_GUTENBERG_AUTHOR_URL_RE = re.compile(
+    r"^https://(?:www\.)?gutenberg\.org/ebooks/author/[1-9][0-9]{0,4}$"
+)
 
 
 def _qid_for_entry(entry):
     wikidata = entry.get("wikidata") if isinstance(entry, dict) else None
     qid = wikidata.get("qid") if isinstance(wikidata, dict) else None
     return qid if isinstance(qid, str) and _QID_RE.fullmatch(qid) else None
+
+
+def project_gutenberg_author_url(author_id):
+    """Return the official HTTPS author landing URL for Wikidata P1938.
+
+    P1938's formatter is ``https://gutenberg.org/ebooks/author/$1``.  The
+    ``www`` form is Project Gutenberg's current canonical public landing
+    domain, while retaining the same stable author-ID path.
+    """
+    if (
+        not isinstance(author_id, str)
+        or not PROJECT_GUTENBERG_AUTHOR_ID_PATTERN.fullmatch(author_id)
+    ):
+        return None
+    return "https://www.gutenberg.org/ebooks/author/{}".format(author_id)
+
+
+def is_project_gutenberg_author_url(value):
+    """Whether *value* is an exact official Project Gutenberg author URL."""
+    return (
+        isinstance(value, str)
+        and _PROJECT_GUTENBERG_AUTHOR_URL_RE.fullmatch(value) is not None
+    )
+
+
+def project_gutenberg_author_identifier_resolution(entity):
+    """Resolve P1938 conservatively without name matching or URL lookup.
+
+    Wikidata marks P1938 as a single-value external identifier, but has
+    documented exceptions.  A proposal is therefore allowed only for one
+    distinct, valid, non-deprecated identifier.  Duplicate statements for the
+    same identifier do not create ambiguity; distinct identifiers do.
+    """
+    claims = entity.get("claims") if isinstance(entity, dict) else None
+    statements = (
+        claims.get(PROJECT_GUTENBERG_AUTHOR_ID_PROPERTY)
+        if isinstance(claims, dict)
+        else None
+    )
+    if statements is None:
+        return {"status": "missing", "identifiers": [], "invalid_values": []}
+    if not isinstance(statements, list):
+        return {"status": "invalid", "identifiers": [], "invalid_values": [statements]}
+
+    identifiers = set()
+    invalid_values = []
+    for statement in statements:
+        if not isinstance(statement, dict):
+            invalid_values.append(statement)
+            continue
+        if statement.get("rank") == "deprecated":
+            continue
+        mainsnak = statement.get("mainsnak")
+        datavalue = (
+            mainsnak.get("datavalue") if isinstance(mainsnak, dict) else None
+        )
+        value = datavalue.get("value") if isinstance(datavalue, dict) else None
+        if not isinstance(value, str) or not PROJECT_GUTENBERG_AUTHOR_ID_PATTERN.fullmatch(value):
+            invalid_values.append(value)
+            continue
+        identifiers.add(value)
+
+    ordered_identifiers = sorted(identifiers, key=int)
+    if invalid_values:
+        return {
+            "status": "invalid",
+            "identifiers": ordered_identifiers,
+            "invalid_values": invalid_values,
+        }
+    if not ordered_identifiers:
+        return {"status": "missing", "identifiers": [], "invalid_values": []}
+    if len(ordered_identifiers) > 1:
+        return {
+            "status": "ambiguous",
+            "identifiers": ordered_identifiers,
+            "invalid_values": [],
+        }
+    return {
+        "status": "available",
+        "identifiers": ordered_identifiers,
+        "invalid_values": [],
+    }
 
 
 def _wikiquote_result(value):
@@ -251,6 +345,259 @@ def apply_reviewed_external_links(
         "wikiquote_links_written": wikiquote_written,
         "wikisource_links_written": wikisource_written,
         "records_receiving_both": both,
+        "database_sha256": database_hash,
+    }
+
+
+def reviewed_project_gutenberg_proposals(report):
+    """Validate and extract immutable Project Gutenberg apply proposals.
+
+    The Project Gutenberg audit has its own operation and evidence contract.
+    Keeping this separate from :func:`reviewed_external_link_proposals`
+    prevents the established Wikiquote/Wikisource apply path from accepting a
+    different identity source by accident.
+    """
+    if not isinstance(report, dict):
+        _report_error("Project Gutenberg audit report must be a JSON object")
+    if report.get("audit_schema_version") != 1:
+        _report_error("Project Gutenberg audit report has an unsupported audit_schema_version")
+    if report.get("operation") != "project-gutenberg-external-links-audit":
+        _report_error("Report is not a Project Gutenberg external-links audit")
+    if report.get("mode") != "dry-run":
+        _report_error("Only a dry-run Project Gutenberg audit report may be applied")
+
+    identity_source = report.get("identity_source")
+    if not isinstance(identity_source, dict) or (
+        identity_source.get("wikidata_property")
+        != PROJECT_GUTENBERG_AUTHOR_ID_PROPERTY
+    ) or (
+        identity_source.get("formatter_url")
+        != PROJECT_GUTENBERG_AUTHOR_URL_FORMATTER
+    ):
+        _report_error("Project Gutenberg audit report has unexpected identity-source metadata")
+
+    counts = report.get("counts")
+    if not isinstance(counts, dict):
+        _report_error("Project Gutenberg audit report is missing counts")
+    count_keys = (
+        "records_with_usable_wikidata_qid",
+        "records_missing_usable_wikidata_qid",
+        "records_with_authoritative_gutenberg_identifier",
+        "proposed_new_project_gutenberg_links",
+        "records_with_no_gutenberg_identifier",
+        "ambiguous_multiple_identifiers",
+        "invalid_identifiers",
+        "invalid_resulting_urls",
+        "valid_existing_project_gutenberg_links",
+        "invalid_existing_project_gutenberg_links",
+        "conflicts",
+        "records_with_no_proposed_change",
+    )
+    for key in count_keys:
+        value = counts.get(key)
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            _report_error("Project Gutenberg audit report has invalid count: {}".format(key))
+
+    total = report.get("total_canonical_records")
+    eligible = report.get("semantically_eligible_philosopher_records")
+    skipped = report.get("non_eligible_records_skipped")
+    for label, value in (("total_canonical_records", total),
+                         ("semantically_eligible_philosopher_records", eligible),
+                         ("non_eligible_records_skipped", skipped)):
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            _report_error("Project Gutenberg audit report has invalid {}".format(label))
+    if total != eligible + skipped:
+        _report_error("Project Gutenberg audit report has inconsistent eligibility counts")
+    if (
+        counts["records_with_usable_wikidata_qid"]
+        + counts["records_missing_usable_wikidata_qid"]
+        != eligible
+    ):
+        _report_error("Project Gutenberg audit report has inconsistent QID counts")
+    failures = report.get("lookup_failures_by_reason")
+    if not isinstance(failures, dict) or any(
+        not isinstance(reason, str)
+        or not isinstance(count, int)
+        or isinstance(count, bool)
+        or count <= 0
+        for reason, count in failures.items()
+    ):
+        _report_error("Project Gutenberg audit report has malformed lookup failures")
+    if (
+        counts["records_with_authoritative_gutenberg_identifier"]
+        + counts["records_with_no_gutenberg_identifier"]
+        + counts["ambiguous_multiple_identifiers"]
+        + counts["invalid_identifiers"]
+        + sum(failures.values())
+        != counts["records_with_usable_wikidata_qid"]
+    ):
+        _report_error("Project Gutenberg audit report has inconsistent identifier counts")
+    if (
+        counts["records_with_authoritative_gutenberg_identifier"]
+        != counts["proposed_new_project_gutenberg_links"]
+        + counts["valid_existing_project_gutenberg_links"]
+        + counts["conflicts"]
+    ):
+        _report_error("Project Gutenberg audit report has inconsistent proposal counts")
+    if (
+        counts["records_with_no_proposed_change"]
+        != eligible
+        - counts["proposed_new_project_gutenberg_links"]
+        - counts["conflicts"]
+    ):
+        _report_error("Project Gutenberg audit report has inconsistent unchanged count")
+
+    counted_lists = (
+        ("records_missing_usable_wikidata_qid", "records_missing_usable_wikidata_qid"),
+        ("records_with_no_gutenberg_identifier", "records_with_no_gutenberg_identifier"),
+        ("ambiguous_multiple_identifiers", "ambiguous_multiple_identifiers"),
+        ("invalid_identifiers", "invalid_identifiers"),
+        ("invalid_resulting_urls", "invalid_resulting_urls"),
+        ("valid_existing_project_gutenberg_links", "valid_existing_project_gutenberg_links"),
+        ("invalid_existing_project_gutenberg_links", "invalid_existing_project_gutenberg_links"),
+        ("conflicts", "conflicts"),
+        ("skipped_non_eligible_records", None),
+    )
+    for report_key, count_key in counted_lists:
+        value = report.get(report_key)
+        expected = skipped if count_key is None else counts[count_key]
+        if not isinstance(value, list) or len(value) != expected:
+            _report_error("Project Gutenberg audit report has inconsistent {}".format(report_key))
+
+    safety_lists = (
+        ("conflicts", "conflicts"),
+        ("ambiguous_multiple_identifiers", "ambiguous multiple identifiers"),
+        ("invalid_identifiers", "invalid identifiers"),
+        ("invalid_resulting_urls", "invalid resulting URLs"),
+        ("invalid_existing_project_gutenberg_links", "invalid existing Gutenberg links"),
+    )
+    for key, description in safety_lists:
+        value = report.get(key)
+        if not isinstance(value, list) or len(value) != counts[key]:
+            _report_error("Project Gutenberg audit report has inconsistent {}".format(description))
+        if value:
+            _report_error("Project Gutenberg audit report contains {}".format(description))
+    if failures:
+        _report_error("Project Gutenberg audit report contains lookup failures")
+
+    rows = report.get("changes_or_conflicts")
+    if not isinstance(rows, list):
+        _report_error("Project Gutenberg audit report changes_or_conflicts must be a list")
+
+    proposals = []
+    seen_titles = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            _report_error("Project Gutenberg audit report contains a malformed proposal row")
+        title = row.get("title")
+        if not isinstance(title, str) or not title:
+            _report_error("Project Gutenberg audit report proposal title must be non-empty")
+        if title in seen_titles:
+            _report_error("Project Gutenberg audit report has duplicate proposal title: {}".format(title))
+        seen_titles.add(title)
+        qid = row.get("qid")
+        if not isinstance(qid, str) or not _QID_RE.fullmatch(qid):
+            _report_error("Project Gutenberg audit report has invalid QID for {}".format(title))
+        current = row.get("current")
+        proposed = row.get("proposed")
+        evidence = row.get("evidence")
+        status = row.get("project_gutenberg")
+        if not isinstance(current, dict) or current.get("project_gutenberg") is not None:
+            _report_error("Project Gutenberg audit report has non-null reviewed target for {}".format(title))
+        if not isinstance(proposed, dict) or set(proposed) != {"project_gutenberg"}:
+            _report_error("Project Gutenberg audit report has malformed proposal for {}".format(title))
+        if not isinstance(status, dict) or status.get("status") != "proposed" or status.get("reason") is not None:
+            _report_error("Project Gutenberg audit report has non-proposal row for {}".format(title))
+        if not isinstance(evidence, dict):
+            _report_error("Project Gutenberg audit report is missing evidence for {}".format(title))
+        author_id = evidence.get("raw_project_gutenberg_author_id")
+        expected_url = project_gutenberg_author_url(author_id)
+        if (
+            evidence.get("wikidata_property") != PROJECT_GUTENBERG_AUTHOR_ID_PROPERTY
+            or evidence.get("formatter_url") != PROJECT_GUTENBERG_AUTHOR_URL_FORMATTER
+            or expected_url is None
+            or evidence.get("constructed_author_url") != expected_url
+            or proposed.get("project_gutenberg") != expected_url
+        ):
+            _report_error("Project Gutenberg audit report has invalid P1938 evidence for {}".format(title))
+        final_url = evidence.get("verified_final_url")
+        if final_url is not None and final_url != expected_url:
+            _report_error("Project Gutenberg audit report has unexpected verified URL for {}".format(title))
+        proposals.append({
+            "title": title,
+            "qid": qid,
+            "project_gutenberg": expected_url,
+        })
+
+    if not proposals:
+        _report_error("Project Gutenberg audit report contains no proposals")
+    if len(proposals) != counts["proposed_new_project_gutenberg_links"]:
+        _report_error("Project Gutenberg audit report proposal rows do not match proposal count")
+    return proposals
+
+
+def validate_reviewed_project_gutenberg_apply(database, report):
+    """Fail closed unless every reviewed P1938 proposal remains applicable."""
+    if not isinstance(database, dict):
+        raise TypeError("database must be a title-to-entry dictionary")
+    proposals = reviewed_project_gutenberg_proposals(report)
+    for proposal in proposals:
+        title = proposal["title"]
+        entry = database.get(title)
+        if not isinstance(entry, dict):
+            _report_error("Reviewed title no longer exists: {}".format(title))
+        if entry.get("title") != title:
+            _report_error("Current entry title does not match reviewed title: {}".format(title))
+        if _qid_for_entry(entry) != proposal["qid"]:
+            _report_error("Current QID differs from reviewed QID for {}".format(title))
+        if not is_semantically_postable_philosopher(entry):
+            _report_error("Reviewed title is no longer semantically eligible: {}".format(title))
+        stored = entry.get("external_links")
+        if stored is not None and not isinstance(stored, dict):
+            _report_error("Current external_links is malformed for {}".format(title))
+        current_value = stored.get("project_gutenberg") if isinstance(stored, dict) else None
+        if current_value is not None:
+            _report_error("Current project_gutenberg is no longer null for {}".format(title))
+    return proposals
+
+
+def apply_reviewed_project_gutenberg_links(
+    database,
+    report,
+    filename,
+    data_folder,
+    persistence_lock,
+):
+    """Atomically write only reviewed Project Gutenberg author-link fields."""
+    proposals = validate_reviewed_project_gutenberg_apply(database, report)
+    candidate_database = deepcopy(database)
+    applied_changes = []
+    for proposal in proposals:
+        entry = candidate_database[proposal["title"]]
+        links = entry.get("external_links")
+        if links is None:
+            # Preserve the historical absence of unrelated reading-link keys.
+            links = {}
+            entry["external_links"] = links
+        links["project_gutenberg"] = proposal["project_gutenberg"]
+        applied_changes.append({
+            "title": proposal["title"],
+            "qid": proposal["qid"],
+            "previous_project_gutenberg": None,
+            "project_gutenberg": proposal["project_gutenberg"],
+        })
+
+    database_hash = rewrite_database(
+        candidate_database, filename, data_folder, persistence_lock
+    )
+    # Do not change the caller's view until the validated rewrite succeeds.
+    database.clear()
+    database.update(candidate_database)
+    return {
+        "reviewed_proposal_count": len(proposals),
+        "records_updated": len(applied_changes),
+        "project_gutenberg_links_written": len(applied_changes),
+        "applied_changes": applied_changes,
         "database_sha256": database_hash,
     }
 
@@ -461,6 +808,222 @@ def format_external_links_audit_summary(report, report_path=None):
             both=counts["records_receiving_both"],
             unchanged=counts["records_with_no_proposed_change"],
             invalid=counts["invalid_existing_external_link_values"],
+            conflicts=counts["conflicts"],
+        )
+    )
+    if report_path is not None:
+        text += "; report {}".format(report_path)
+    return text
+
+
+def audit_project_gutenberg_links(
+    database,
+    limiter=None,
+    wikidata_lookup=get_wikidata_entities_batch,
+    batch_size=50,
+):
+    """Read-only P1938 audit for Project Gutenberg author landing links.
+
+    Unlike the Wikiquote/Wikisource audit, this uses stable semantic
+    philosopher eligibility. It never searches Gutenberg by name, never
+    requests Wikiquote, and never mutates a canonical entry.
+    """
+    if not isinstance(database, dict):
+        raise TypeError("database must be a title-to-entry dictionary")
+    if not isinstance(batch_size, int) or batch_size <= 0:
+        raise ValueError("batch_size must be positive")
+
+    eligible_rows = []
+    skipped_records = []
+    missing_qid = []
+    qids = []
+    invalid_existing = []
+
+    for title in sorted(database):
+        entry = database[title]
+        if not is_semantically_postable_philosopher(entry):
+            skipped_records.append({"title": title})
+            continue
+
+        current = external_links_for_entry(entry)["project_gutenberg"]
+        qid = _qid_for_entry(entry)
+        row = {
+            "title": title,
+            "qid": qid,
+            "current": {"project_gutenberg": current},
+            "proposed": {"project_gutenberg": None},
+            "evidence": None,
+            "project_gutenberg": {"status": "pending_lookup", "reason": None},
+        }
+        if current is not None and not is_project_gutenberg_author_url(current):
+            invalid_existing.append({
+                "title": title,
+                "qid": qid,
+                "project_gutenberg": current,
+            })
+        if qid is None:
+            row["project_gutenberg"] = {
+                "status": "unavailable", "reason": "missing_qid"
+            }
+            missing_qid.append({"title": title, "current": row["current"]})
+        else:
+            qids.append(qid)
+        eligible_rows.append(row)
+
+    entities, lookup_failures = _batch_wikidata(
+        sorted(set(qids)), limiter, wikidata_lookup, batch_size
+    )
+    failure_counts = Counter()
+    no_identifier = []
+    ambiguous = []
+    invalid_identifiers = []
+    invalid_urls = []
+    conflicts = []
+    existing_valid = []
+    detail_rows = []
+
+    for row in eligible_rows:
+        qid = row["qid"]
+        current = row["current"]["project_gutenberg"]
+        if qid is None:
+            continue
+        failure = lookup_failures.get(qid)
+        if failure is not None:
+            reason = "wikidata_{}".format(failure)
+            row["project_gutenberg"] = {"status": "unavailable", "reason": reason}
+            failure_counts[reason] += 1
+            continue
+
+        resolution = project_gutenberg_author_identifier_resolution(entities.get(qid))
+        status = resolution["status"]
+        if status == "missing":
+            row["project_gutenberg"] = {"status": "unavailable", "reason": "no_p1938"}
+            no_identifier.append({"title": row["title"], "qid": qid})
+            continue
+        if status == "invalid":
+            row["project_gutenberg"] = {
+                "status": "unavailable", "reason": "invalid_p1938"
+            }
+            invalid_identifiers.append({
+                "title": row["title"], "qid": qid,
+                "identifiers": resolution["identifiers"],
+                "invalid_values": resolution["invalid_values"],
+            })
+            detail_rows.append(row)
+            continue
+        if status == "ambiguous":
+            row["project_gutenberg"] = {
+                "status": "ambiguous", "reason": "multiple_p1938"
+            }
+            ambiguous.append({
+                "title": row["title"], "qid": qid,
+                "identifiers": resolution["identifiers"],
+            })
+            detail_rows.append(row)
+            continue
+
+        author_id = resolution["identifiers"][0]
+        url = project_gutenberg_author_url(author_id)
+        if not is_project_gutenberg_author_url(url):
+            row["project_gutenberg"] = {
+                "status": "unavailable", "reason": "invalid_constructed_url"
+            }
+            invalid_urls.append({
+                "title": row["title"], "qid": qid,
+                "author_id": author_id,
+                "url": url,
+            })
+            detail_rows.append(row)
+            continue
+
+        row["evidence"] = {
+            "wikidata_property": PROJECT_GUTENBERG_AUTHOR_ID_PROPERTY,
+            "raw_project_gutenberg_author_id": author_id,
+            "formatter_url": PROJECT_GUTENBERG_AUTHOR_URL_FORMATTER,
+            "constructed_author_url": url,
+            "verified_final_url": None,
+        }
+        if current is None:
+            row["proposed"]["project_gutenberg"] = url
+            row["project_gutenberg"] = {"status": "proposed", "reason": None}
+            detail_rows.append(row)
+        elif current == url:
+            row["project_gutenberg"] = {"status": "preserved", "reason": None}
+            existing_valid.append({
+                "title": row["title"], "qid": qid,
+                "project_gutenberg": current,
+            })
+        else:
+            row["project_gutenberg"] = {
+                "status": "conflict", "reason": "stored_url_differs_from_p1938"
+            }
+            conflict = {
+                "title": row["title"], "qid": qid,
+                "current": current, "observed": url,
+            }
+            conflicts.append(conflict)
+            detail_rows.append(row)
+
+    proposals = sum(
+        row["proposed"]["project_gutenberg"] is not None for row in eligible_rows
+    )
+    return {
+        "audit_schema_version": 1,
+        "mode": "dry-run",
+        "operation": "project-gutenberg-external-links-audit",
+        "identity_source": {
+            "wikidata_property": PROJECT_GUTENBERG_AUTHOR_ID_PROPERTY,
+            "formatter_url": PROJECT_GUTENBERG_AUTHOR_URL_FORMATTER,
+        },
+        "total_canonical_records": len(database),
+        "semantically_eligible_philosopher_records": len(eligible_rows),
+        "non_eligible_records_skipped": len(skipped_records),
+        "counts": {
+            "records_with_usable_wikidata_qid": len(eligible_rows) - len(missing_qid),
+            "records_missing_usable_wikidata_qid": len(missing_qid),
+            "records_with_authoritative_gutenberg_identifier": sum(
+                row["evidence"] is not None for row in eligible_rows
+            ),
+            "proposed_new_project_gutenberg_links": proposals,
+            "records_with_no_gutenberg_identifier": len(no_identifier),
+            "ambiguous_multiple_identifiers": len(ambiguous),
+            "invalid_identifiers": len(invalid_identifiers),
+            "invalid_resulting_urls": len(invalid_urls),
+            "valid_existing_project_gutenberg_links": len(existing_valid),
+            "invalid_existing_project_gutenberg_links": len(invalid_existing),
+            "conflicts": len(conflicts),
+            "records_with_no_proposed_change": (
+                len(eligible_rows) - proposals - len(conflicts)
+            ),
+        },
+        "lookup_failures_by_reason": dict(sorted(failure_counts.items())),
+        "records_missing_usable_wikidata_qid": missing_qid,
+        "records_with_no_gutenberg_identifier": no_identifier,
+        "ambiguous_multiple_identifiers": ambiguous,
+        "invalid_identifiers": invalid_identifiers,
+        "invalid_resulting_urls": invalid_urls,
+        "valid_existing_project_gutenberg_links": existing_valid,
+        "invalid_existing_project_gutenberg_links": invalid_existing,
+        "conflicts": conflicts,
+        "skipped_non_eligible_records": skipped_records,
+        "changes_or_conflicts": detail_rows,
+    }
+
+
+def format_project_gutenberg_audit_summary(report, report_path=None):
+    """Return a concise, credential-free Project Gutenberg audit summary."""
+    counts = report["counts"]
+    text = (
+        "Project Gutenberg audit: scanned {total}; semantically eligible {eligible}; "
+        "skipped {skipped}; P1938 identifiers {identifiers}; proposals {proposals}; "
+        "no identifier {missing}; ambiguous {ambiguous}; conflicts {conflicts}".format(
+            total=report["total_canonical_records"],
+            eligible=report["semantically_eligible_philosopher_records"],
+            skipped=report["non_eligible_records_skipped"],
+            identifiers=counts["records_with_authoritative_gutenberg_identifier"],
+            proposals=counts["proposed_new_project_gutenberg_links"],
+            missing=counts["records_with_no_gutenberg_identifier"],
+            ambiguous=counts["ambiguous_multiple_identifiers"],
             conflicts=counts["conflicts"],
         )
     )

@@ -135,6 +135,20 @@ The installed console commands are:
   Apply performs no network lookup, validates every proposal against current
   state, takes one verified pre-operation backup, and atomically writes only
   the reviewed Wikiquote/Wikisource fields.
+
+  Project Gutenberg author-link discovery uses only the canonical Wikidata
+  QID's P1938 author identifier—never a name search. Review its read-only
+  audit first, then apply only that exact reviewed report. The apply performs
+  no network lookup, validates the complete proposal set before taking one
+  verified backup, and atomically changes only
+  `external_links.project_gutenberg`:
+
+  ```bash
+  wiki-philosopher-enrich-external-links --project-gutenberg
+
+  wiki-philosopher-enrich-external-links \
+    --apply-project-gutenberg-report reports/external-links/REVIEWED.json
+  ```
 - `wiki-philosopher-check-recent-deaths`
 - `wiki-philosopher-reevaluate`
 - `wiki-philosopher-purge-rejected-quotes`
