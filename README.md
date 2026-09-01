@@ -77,12 +77,24 @@ wiki-philosopher-dispatch-post --attempt-id <attempt-id>
 # Persist the resulting database.jsonl again.
 ```
 
-The application does not perform that external checkpoint itself. A
-GitHub Actions workflow can run one posting attempt manually or automatically
-once per day at 16:19 Europe/Dublin time.
-It checks out `database.jsonl` from a separate private authoritative data
-repository, runs prepare, pushes the pending checkpoint, dispatches the exact
-stored attempt once, then pushes the terminal checkpoint.
+The application does not perform that external checkpoint itself. GitHub
+Actions runs one random post on the workflow's existing daily Dublin schedule.
+For a manual run, open **Actions → Manual philosopher post → Run workflow**:
+leave **Exact philosopher title** blank for normal random selection, or enter
+an exact canonical title such as `René Descartes` to prepare that philosopher
+only. An invalid, already-posted, ineligible, quote-less, or stale title fails
+at prepare time; it never falls back to a random post.
+
+For real manual posting, GitHub Actions is preferred over local dispatch: it
+uses and checkpoints the authoritative private database automatically. The
+local prepare/dispatch commands remain useful for development, testing, and
+exceptional recovery, but a real local dispatch changes only the local
+database until an operator explicitly persists it to the private data
+repository.
+
+Both workflow paths check out `database.jsonl` from a separate private
+authoritative data repository, run prepare, push the pending checkpoint,
+dispatch the exact stored attempt once, then push the terminal checkpoint.
 
 The workflow expects a repository variable named `DATA_REPOSITORY` with the
 value `owner/private-data-repository`, plus the `DATA_REPO_TOKEN`,

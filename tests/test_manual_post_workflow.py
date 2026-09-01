@@ -18,6 +18,28 @@ def test_post_workflow_supports_manual_and_daily_dublin_execution_without_overla
     assert "cancel-in-progress: false" in text
 
 
+def test_manual_dispatch_accepts_an_optional_exact_title_without_affecting_schedule():
+    text = workflow_text()
+
+    assert (
+        "workflow_dispatch:\n"
+        "    inputs:\n"
+        "      title:\n"
+        "        description: 'Exact philosopher title (leave blank for random selection)'\n"
+        "        required: false\n"
+        "        type: string"
+    ) in text
+    assert (
+        "REQUESTED_TITLE: ${{ github.event_name == 'workflow_dispatch' && inputs.title || '' }}"
+        in text
+    )
+    assert 'if [ -n "$REQUESTED_TITLE" ]; then' in text
+    assert 'wiki-philosopher-prepare-post --title "$REQUESTED_TITLE"' in text
+    assert "else\n            wiki-philosopher-prepare-post >" in text
+    assert "--title \"${{ inputs.title }}\"" not in text
+    assert "--title '${{ inputs.title }}'" not in text
+
+
 def test_private_data_checkout_uses_configured_repository_and_secret_token():
     text = workflow_text()
 

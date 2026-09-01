@@ -2,6 +2,11 @@ name: Manual philosopher post
 
 on:
   workflow_dispatch:
+    inputs:
+      title:
+        description: 'Exact philosopher title (leave blank for random selection)'
+        required: false
+        type: string
   schedule:
     - cron: '19 06 * * *'
       timezone: 'Europe/Dublin'
@@ -71,10 +76,18 @@ jobs:
 
       - id: prepare
         name: Prepare one pending posting attempt without Telegram
+        env:
+          # Scheduled events deliberately receive an empty title and keep the
+          # existing random-selection behavior.
+          REQUESTED_TITLE: ${{ github.event_name == 'workflow_dispatch' && inputs.title || '' }}
         run: |
           set -euo pipefail
           output_path="${RUNNER_TEMP}/prepare-post-output.txt"
-          wiki-philosopher-prepare-post > "${output_path}" 2>&1
+          if [ -n "$REQUESTED_TITLE" ]; then
+            wiki-philosopher-prepare-post --title "$REQUESTED_TITLE" > "${output_path}" 2>&1
+          else
+            wiki-philosopher-prepare-post > "${output_path}" 2>&1
+          fi
           cat "${output_path}"
           OUTPUT_PATH="${output_path}" python - <<'PY' >> "${GITHUB_OUTPUT}"
           import json
