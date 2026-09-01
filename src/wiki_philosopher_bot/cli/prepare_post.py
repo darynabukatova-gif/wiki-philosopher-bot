@@ -28,6 +28,14 @@ def parse_args(argv=None):
     )
     parser.add_argument("--data-folder", default=CANONICAL_DATA_FOLDER)
     parser.add_argument("--report-folder", default=POSTING_ATTEMPT_REPORT_FOLDER)
+    parser.add_argument(
+        "--title",
+        help=(
+            "Prepare this exact canonical philosopher title if it currently "
+            "satisfies normal posting eligibility; without --title, normal "
+            "candidate selection is used."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -44,6 +52,7 @@ def main(argv=None):
         filename=DATABASE_FILE,
         max_quotes=MAX_QUOTES,
         limiter=RateLimiter(RATE_LIMIT),
+        title=args.title,
     )
     report = build_posting_phase_report(result, started_at, time.time())
     try:

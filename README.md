@@ -70,6 +70,8 @@ For future unattended posting, prepare and dispatch are separate commands:
 
 ```bash
 wiki-philosopher-prepare-post
+# Or prepare one exact currently eligible canonical philosopher:
+wiki-philosopher-prepare-post --title "René Descartes"
 # Persist the changed database.jsonl to the authoritative store.
 wiki-philosopher-dispatch-post --attempt-id <attempt-id>
 # Persist the resulting database.jsonl again.

@@ -45,6 +45,39 @@ def test_prepare_cli_persists_pending_and_prints_safe_structured_result(tmp_path
     assert len(database["Ada Lovelace"]["posting"]["attempts"]) == 1
 
 
+def test_prepare_cli_title_prepares_only_the_requested_exact_canonical_entry(tmp_path, monkeypatch, capsys):
+    entry = postable_entry()
+    write_database(tmp_path, entry)
+    monkeypatch.setattr(prepare_cli, "save_posting_phase_report", lambda *args, **kwargs: (tmp_path / "report.json", []))
+
+    assert prepare_cli.main([
+        "--title", "Ada Lovelace", "--data-folder", str(tmp_path),
+        "--report-folder", str(tmp_path),
+    ]) == 0
+
+    output = json.loads(capsys.readouterr().out.splitlines()[0])
+    assert output["title"] == "Ada Lovelace"
+    assert output["ending_state"] == "pending"
+    assert len(cache.load_database("database.jsonl", str(tmp_path))["Ada Lovelace"]["posting"]["attempts"]) == 1
+
+
+def test_prepare_cli_unknown_manual_title_fails_without_attempt(tmp_path, monkeypatch, capsys):
+    entry = postable_entry()
+    write_database(tmp_path, entry)
+    before = (tmp_path / "database.jsonl").read_bytes()
+    monkeypatch.setattr(prepare_cli, "save_posting_phase_report", lambda *args, **kwargs: (tmp_path / "report.json", []))
+
+    assert prepare_cli.main([
+        "--title", "Ada", "--data-folder", str(tmp_path),
+        "--report-folder", str(tmp_path),
+    ]) == 1
+
+    output = json.loads(capsys.readouterr().out.splitlines()[0])
+    assert output["error_kind"] == "title_not_found"
+    assert (tmp_path / "database.jsonl").read_bytes() == before
+    assert cache.load_database("database.jsonl", str(tmp_path))["Ada Lovelace"]["posting"]["attempts"] == []
+
+
 def test_dispatch_cli_keeps_sent_state_when_report_write_fails(tmp_path, monkeypatch, capsys):
     entry = postable_entry()
     database = {entry["title"]: entry}

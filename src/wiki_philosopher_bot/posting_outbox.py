@@ -29,7 +29,11 @@ from wiki_philosopher_bot.telegram_bot import (
     TelegramResult,
     send_message,
 )
-from wiki_philosopher_bot.utils import get_random_philosopher
+from wiki_philosopher_bot.utils import (
+    get_random_philosopher,
+    is_posting_candidate,
+    is_semantically_postable_philosopher,
+)
 
 
 @dataclass(frozen=True)
@@ -82,6 +86,7 @@ def prepare_posting_attempt(
     limiter=None,
     candidate_chooser=None,
     quote_chooser=None,
+    title=None,
     attempt_id=None,
     now=None,
 ):
@@ -101,17 +106,65 @@ def prepare_posting_attempt(
             manual_reconciliation_required=True,
         )
 
-    candidate_kwargs = {}
-    if candidate_chooser is not None:
-        candidate_kwargs["chooser"] = candidate_chooser
-    philosopher = get_random_philosopher(database, **candidate_kwargs)
-    if philosopher is None:
-        return PostingOperationResult(
-            phase="prepare",
-            ok=False,
-            error_kind="no_candidate",
-            error_summary="No eligible philosopher is available for posting.",
-        )
+    if title is not None:
+        # Exact canonical-key lookup only: no normalization, aliasing, or
+        # fallback selection is permitted for an operator-selected title.
+        if not isinstance(title, str) or not title:
+            return PostingOperationResult(
+                phase="prepare",
+                ok=False,
+                error_kind="invalid_title",
+                error_summary="A manual title must be a non-empty exact canonical title.",
+            )
+        philosopher = database.get(title)
+        if not isinstance(philosopher, dict) or philosopher.get("title") != title:
+            return PostingOperationResult(
+                phase="prepare",
+                ok=False,
+                title=title,
+                error_kind="title_not_found",
+                error_summary="The requested canonical title does not exist.",
+            )
+        if not is_posting_candidate(philosopher):
+            if not is_semantically_postable_philosopher(philosopher):
+                error_kind = "title_not_eligible"
+                error_summary = "The requested title is not an eligible philosopher."
+            elif (
+                isinstance(philosopher.get("posting"), dict)
+                and philosopher["posting"].get("has_been_posted") is True
+            ):
+                error_kind = "already_posted"
+                error_summary = "The requested title has already been posted."
+            elif not (
+                isinstance(philosopher.get("quotes"), dict)
+                and philosopher["quotes"].get("status") == "available"
+                and isinstance(philosopher["quotes"].get("items"), list)
+                and philosopher["quotes"]["items"]
+            ):
+                error_kind = "no_quote"
+                error_summary = "The requested title has no quote available for preparation."
+            else:
+                error_kind = "title_not_postable"
+                error_summary = "The requested title does not satisfy current posting requirements."
+            return PostingOperationResult(
+                phase="prepare",
+                ok=False,
+                title=title,
+                error_kind=error_kind,
+                error_summary=error_summary,
+            )
+    else:
+        candidate_kwargs = {}
+        if candidate_chooser is not None:
+            candidate_kwargs["chooser"] = candidate_chooser
+        philosopher = get_random_philosopher(database, **candidate_kwargs)
+        if philosopher is None:
+            return PostingOperationResult(
+                phase="prepare",
+                ok=False,
+                error_kind="no_candidate",
+                error_summary="No eligible philosopher is available for posting.",
+            )
 
     title = philosopher["title"]
     selected_quote = select_quote_for_post(

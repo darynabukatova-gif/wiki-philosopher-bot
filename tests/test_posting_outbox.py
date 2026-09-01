@@ -188,6 +188,132 @@ def test_prepare_no_candidate_is_a_clear_noop(tmp_path):
     assert result.error_kind == "no_candidate"
 
 
+def test_prepare_default_mode_keeps_normal_candidate_selection(tmp_path, monkeypatch):
+    ada = postable_entry("Ada Lovelace")
+    zeno = postable_entry("Zeno")
+    database = {ada["title"]: ada, zeno["title"]: zeno}
+    write_database(tmp_path, database)
+    selected = []
+    quote = zeno["quotes"]["items"][0]
+
+    def chooser(philosophers, **kwargs):
+        selected.append((philosophers, kwargs))
+        return [zeno]
+
+    monkeypatch.setattr(outbox, "select_quote_for_post", lambda philosopher, *args, **kwargs: quote)
+    monkeypatch.setattr(
+        outbox, "prepare_philosopher_message",
+        lambda philosopher, selected_quote: type("Prepared", (), {
+            "selected_quote": selected_quote, "message_text": "Normal selection payload",
+        })(),
+    )
+
+    result = prepare(database, tmp_path, candidate_chooser=chooser)
+
+    assert result.ok is True
+    assert result.title == "Zeno"
+    assert selected and selected[0][0] == [ada, zeno]
+
+
+def test_prepare_manual_title_uses_exact_candidate_and_normal_quote_path(tmp_path, monkeypatch):
+    ada = postable_entry("Ada Lovelace")
+    descartes = postable_entry("René Descartes")
+    database = {ada["title"]: ada, descartes["title"]: descartes}
+    write_database(tmp_path, database)
+    selected_quote = descartes["quotes"]["items"][0]
+    quote_calls = []
+    monkeypatch.setattr(outbox, "get_random_philosopher", lambda *args, **kwargs: pytest.fail("manual mode must not select randomly"))
+    monkeypatch.setattr(
+        outbox,
+        "select_quote_for_post",
+        lambda philosopher, *args, **kwargs: quote_calls.append((philosopher, kwargs)) or selected_quote,
+    )
+    monkeypatch.setattr(
+        outbox,
+        "prepare_philosopher_message",
+        lambda philosopher, quote: type("Prepared", (), {
+            "selected_quote": quote, "message_text": "Exact manual payload",
+        })(),
+    )
+    monkeypatch.setattr(outbox, "send_message", lambda *args: pytest.fail("prepare must not send Telegram"))
+
+    result = prepare(database, tmp_path, title="René Descartes")
+
+    assert result.ok is True
+    assert result.title == "René Descartes"
+    assert quote_calls[0][0] == descartes
+    assert quote_calls[0][1]["chooser"] is None
+    attempt = database["René Descartes"]["posting"]["attempts"][-1]
+    assert attempt["state"] == "pending"
+    assert attempt["message_text"] == "Exact manual payload"
+    assert attempt["quote_fingerprint"] == schema.quote_fingerprint(selected_quote)
+    assert attempt["message_fingerprint"] == schema.message_fingerprint("Exact manual payload")
+
+
+@pytest.mark.parametrize(
+    ("title", "mutate", "error_kind"),
+    [
+        ("Unknown", lambda entry: None, "title_not_found"),
+        ("Ada Lovelace", lambda entry: entry["evaluation"].__setitem__("status", "rejected"), "title_not_eligible"),
+        ("Ada Lovelace", lambda entry: entry["posting"].__setitem__("has_been_posted", True), "already_posted"),
+        ("Ada Lovelace", lambda entry: entry["quotes"].update({"status": "not_found", "items": []}), "no_quote"),
+        ("Ada Lovelace", lambda entry: entry["quotes"].__setitem__("parser_version", CURRENT_QUOTE_PARSER_VERSION - 1), "title_not_postable"),
+    ],
+)
+def test_prepare_manual_title_failures_do_not_fall_back_or_mutate(tmp_path, monkeypatch, title, mutate, error_kind):
+    entry = postable_entry()
+    mutate(entry)
+    database = {entry["title"]: entry}
+    write_database(tmp_path, database)
+    before = (tmp_path / "database.jsonl").read_bytes()
+    monkeypatch.setattr(outbox, "get_random_philosopher", lambda *args, **kwargs: pytest.fail("no random fallback"))
+    monkeypatch.setattr(outbox, "select_quote_for_post", lambda *args, **kwargs: pytest.fail("no quote selection"))
+
+    result = prepare(database, tmp_path, title=title)
+
+    assert result.ok is False
+    assert result.error_kind == error_kind
+    assert entry["posting"]["attempts"] == []
+    assert (tmp_path / "database.jsonl").read_bytes() == before
+
+
+def test_unresolved_attempt_blocks_manual_title_before_selection(tmp_path, monkeypatch):
+    first = postable_entry("Ada Lovelace")
+    requested = postable_entry("René Descartes")
+    database = {first["title"]: first, requested["title"]: requested}
+    write_database(tmp_path, database)
+    append_pending(database, tmp_path, title="Ada Lovelace")
+    monkeypatch.setattr(outbox, "select_quote_for_post", lambda *args, **kwargs: pytest.fail("blocked before quote selection"))
+
+    result = prepare(database, tmp_path, title="René Descartes", attempt_id="manual-attempt")
+
+    assert result.ok is False
+    assert result.error_kind == "unresolved_attempt"
+    assert requested["posting"]["attempts"] == []
+
+
+def test_manual_title_preparation_uses_normal_external_link_message_and_fingerprint(tmp_path, monkeypatch):
+    entry = postable_entry("René Descartes")
+    entry["external_links"].update({
+        "wikiquote": "https://en.wikiquote.org/wiki/Ren%C3%A9_Descartes",
+        "wikisource": "https://en.wikisource.org/wiki/Author:Ren%C3%A9_Descartes",
+        "project_gutenberg": "https://www.gutenberg.org/ebooks/author/44",
+    })
+    database = {entry["title"]: entry}
+    write_database(tmp_path, database)
+    quote = entry["quotes"]["items"][0]
+    monkeypatch.setattr(outbox, "select_quote_for_post", lambda *args, **kwargs: quote)
+
+    result = prepare(database, tmp_path, title="René Descartes")
+
+    assert result.ok is True
+    attempt = database["René Descartes"]["posting"]["attempts"][-1]
+    assert "Wikiquote</a> · " in attempt["message_text"]
+    assert "Wikisource</a> · " in attempt["message_text"]
+    assert '<a href="https://www.gutenberg.org/ebooks/author/44">Gutenberg</a>' in attempt["message_text"]
+    assert attempt["message_fingerprint"] == schema.message_fingerprint(attempt["message_text"])
+
+
 def test_dispatch_sends_exact_stored_payload_once_without_repreparing_or_link_lookup(tmp_path, monkeypatch):
     entry = postable_entry()
     database = {entry["title"]: entry}
