@@ -92,6 +92,19 @@ exceptional recovery, but a real local dispatch changes only the local
 database until an operator explicitly persists it to the private data
 repository.
 
+To prepare a specific philosopher through Actions, first find the exact
+canonical title locally (this is read-only):
+
+```bash
+wiki-philosopher-find-title zizek
+```
+
+Copy the returned canonical title, then open **Actions → Manual philosopher
+post → Run workflow** and paste it into **Exact philosopher title**. The
+finder accepts convenient case-insensitive and diacritic-insensitive input,
+but the Actions title field and `prepare-post --title` remain exact-only. Add
+`--all` to inspect non-eligible or already-posted canonical titles.
+
 Both workflow paths check out `database.jsonl` from a separate private
 authoritative data repository, run prepare, push the pending checkpoint,
 dispatch the exact stored attempt once, then push the terminal checkpoint.
