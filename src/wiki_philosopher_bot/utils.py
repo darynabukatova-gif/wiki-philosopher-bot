@@ -154,6 +154,25 @@ def candidate_selection_weight(entry):
     return max(raw_content, -1) + 2
 
 
+def is_semantically_postable_philosopher(entry):
+    """Whether an entry passed the durable philosopher-evaluation decision.
+
+    This intentionally differs from :func:`is_posting_candidate`: it does not
+    depend on quote-cache freshness, quote availability, or whether the
+    philosopher has already been posted.  Read-only quality diagnostics use
+    this stable semantic boundary so a posted philosopher remains relevant,
+    while rejected topics, lists, and non-human entities do not create
+    actionable presentation warnings.
+    """
+    return (
+        isinstance(entry, dict)
+        and isinstance(entry.get("title"), str)
+        and bool(entry["title"].strip())
+        and isinstance(entry.get("evaluation"), dict)
+        and entry["evaluation"].get("status") == "accepted"
+    )
+
+
 def is_posting_candidate(entry):
     """Whether *entry* satisfies the bot's existing posting predicate.
 

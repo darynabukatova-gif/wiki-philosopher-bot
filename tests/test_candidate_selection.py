@@ -7,6 +7,7 @@ from wiki_philosopher_bot.utils import (
     get_random_philosopher,
     is_accepted_record,
     is_rejected_record,
+    is_semantically_postable_philosopher,
 )
 from wiki_philosopher_bot.database_schema import make_empty_database_entry
 
@@ -40,6 +41,14 @@ def test_is_rejected_record_supports_historical_and_current_shapes():
     assert is_rejected_record({"accepted": True}) is False
     assert is_rejected_record({"status": "rejected"}) is True
     assert is_rejected_record({"status": "accepted"}) is False
+
+
+def test_semantic_postability_uses_evaluation_not_transient_posting_state():
+    value = make_empty_database_entry("Ada Lovelace")
+    value["evaluation"]["status"] = "accepted"
+    value["posting"]["has_been_posted"] = True
+
+    assert is_semantically_postable_philosopher(value) is True
 
 
 def choose_first(population, weights=None, k=1):

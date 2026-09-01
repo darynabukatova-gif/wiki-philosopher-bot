@@ -19,6 +19,7 @@ from wiki_philosopher_bot.config import (
 )
 import wiki_philosopher_bot.evaluation as evaluation
 from wiki_philosopher_bot.utils import candidate_selection_weight
+from wiki_philosopher_bot.summary_quality import audit_summary_quality
 from wiki_philosopher_bot.wikipedia_api import quote_selection_weight
 
 
@@ -1255,6 +1256,7 @@ def analyze_database(database):
         "joint_confidence": joint_confidence,
         "decision_margins": decision_margins,
         "reason_analysis": reason_analysis,
+        "summary_quality": audit_summary_quality(database),
     }
 
 
