@@ -13,6 +13,7 @@ from wiki_philosopher_bot.config import (
     YEAR_END_RE,
     CURRENT_QUOTE_PARSER_VERSION,
 )
+from wiki_philosopher_bot.database_schema import is_valid_external_link
 
 class RateLimiter:
 
@@ -144,14 +145,75 @@ def is_rejected_record(record):
     return record.get("accepted") is False
 
 
+def has_usable_posting_summary(entry):
+    """Whether an entry has the required stored Wikipedia post core.
+
+    The summary-quality audit remains deliberately separate: its heuristic
+    findings are not a posting blocker and this helper never rewrites text.
+    """
+    if not isinstance(entry, dict):
+        return False
+    summary = entry.get("summary")
+    if not isinstance(summary, dict) or summary.get("source") != "Wikipedia":
+        return False
+    text = summary.get("text")
+    return (
+        isinstance(text, str)
+        and bool(text.strip())
+        and text.strip() != "No summary available."
+    )
+
+
+def has_current_usable_quotes(entry):
+    """Whether an entry has a current cached quote set safe to select from.
+
+    This is intentionally data-only. It never calls the fetch-capable quote
+    API for failed, empty, or stale caches.
+    """
+    if not isinstance(entry, dict):
+        return False
+    quotes = entry.get("quotes")
+    return (
+        isinstance(quotes, dict)
+        and quotes.get("status") == "available"
+        and isinstance(quotes.get("items"), list)
+        and bool(quotes["items"])
+        and quotes.get("parser_version") == CURRENT_QUOTE_PARSER_VERSION
+    )
+
+
 def candidate_selection_weight(entry):
-    """Return a positive content-only selection weight for one candidate."""
+    """Return the stored-data-only summary-first selection weight.
+
+    Every eligible philosopher starts with the established content-confidence
+    base. A current quote adds modest enrichment; Wikisource and Gutenberg
+    receive larger fixed bonuses for additional reading value. Wikiquote is
+    intentionally not a separate bonus because it is highly correlated with
+    current quote availability and would double-count that signal.
+    """
     raw_content = entry["evaluation"].get("content_confidence")
 
     if not isinstance(raw_content, int) or isinstance(raw_content, bool):
         raw_content = -1
 
-    return max(raw_content, -1) + 2
+    weight = max(raw_content, -1) + 2
+    if has_current_usable_quotes(entry):
+        weight += 1
+    external_links = entry.get("external_links")
+    if isinstance(external_links, dict):
+        if (
+            external_links.get("wikisource")
+            and is_valid_external_link("wikisource", external_links.get("wikisource"))
+        ):
+            weight += 2
+        if (
+            external_links.get("project_gutenberg")
+            and is_valid_external_link(
+                "project_gutenberg", external_links.get("project_gutenberg")
+            )
+        ):
+            weight += 2
+    return weight
 
 
 def is_semantically_postable_philosopher(entry):
@@ -174,25 +236,19 @@ def is_semantically_postable_philosopher(entry):
 
 
 def is_posting_candidate(entry):
-    """Whether *entry* satisfies the bot's existing posting predicate.
+    """Whether *entry* satisfies the summary-first posting predicate.
 
     Keep this deliberately narrow and data-only: unresolved outbox attempts
     are a separate global operation guard, not candidate-selection semantics.
-    Both random selection and read-only enrichment audits use this exact
-    predicate so they cannot drift into competing definitions of philosopher
-    eligibility.
+    Quote-specific enrichment audits preserve their own explicit historical
+    scope rather than inheriting this broader posting predicate implicitly.
     """
     return (
         isinstance(entry, dict)
         and isinstance(entry.get("title"), str)
         and isinstance(entry.get("evaluation"), dict)
         and entry["evaluation"].get("status") == "accepted"
-        and isinstance(entry.get("quotes"), dict)
-        and entry["quotes"].get("status") == "available"
-        and isinstance(entry["quotes"].get("items"), list)
-        and entry["quotes"]["items"]
-        and entry["quotes"].get("parser_version")
-        == CURRENT_QUOTE_PARSER_VERSION
+        and has_usable_posting_summary(entry)
         and isinstance(entry.get("posting"), dict)
         and entry["posting"].get("has_been_posted") is False
     )

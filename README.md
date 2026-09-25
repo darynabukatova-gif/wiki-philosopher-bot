@@ -1,8 +1,9 @@
 # Wiki Scraper Telegram Bot
 
 This project discovers and evaluates philosopher pages using Wikipedia and
-Wikidata, extracts structured quotations from Wikiquote, stores canonical
-state locally, and can post selected quotations to Telegram.
+Wikidata, stores canonical state locally, and posts summary-first philosopher
+profiles to Telegram with optional structured Wikiquote quotations and reading
+links.
 
 ## Features
 
@@ -10,7 +11,7 @@ state locally, and can post selected quotations to Telegram.
 - Wikidata-backed candidate evaluation
 - Structured Wikiquote quotation extraction with parser versioning
 - A local canonical JSONL database
-- Telegram quotation posting
+- Summary-first Telegram philosopher posting with optional quotation enrichment
 - Recent-death monitoring and maintenance commands
 - Verified pre-apply database backups for dangerous maintenance operations
 - A pytest test suite
@@ -82,8 +83,9 @@ Actions runs one random post on the workflow's existing daily Dublin schedule.
 For a manual run, open **Actions → Manual philosopher post → Run workflow**:
 leave **Exact philosopher title** blank for normal random selection, or enter
 an exact canonical title such as `René Descartes` to prepare that philosopher
-only. An invalid, already-posted, ineligible, quote-less, or stale title fails
-at prepare time; it never falls back to a random post.
+only. An invalid, already-posted, ineligible, or summary-less title fails at
+prepare time; missing or stale quotes are simply omitted. It never falls back
+to a random post.
 
 For real manual posting, GitHub Actions is preferred over local dispatch: it
 uses and checkpoints the authoritative private database automatically. The

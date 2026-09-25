@@ -845,12 +845,12 @@ def test_analyze_database_candidate_weights_match_production_helper_without_muta
         }
         for title in ("Alpha", "Beta", "Gamma", "Zeta")
     ]
-    assert records[1]["selection_weight"] == 3
+    assert records[1]["selection_weight"] == 4
     assert {
         record["selection_weight"]
         for record in records
         if record["content_confidence"] == 2
-    } == {4}
+        } == {5}
     assert database == before
 
 

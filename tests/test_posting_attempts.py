@@ -54,6 +54,22 @@ def test_existing_posted_record_without_attempts_remains_valid():
     assert database_schema.validate_database_entry(entry) == []
 
 
+def test_summary_only_attempt_uses_nullable_quote_fingerprint():
+    attempt = database_schema.make_pending_posting_attempt(
+        TITLE, None, MESSAGE, attempt_id="summary-only", now=NOW,
+    )
+
+    assert attempt["quote_fingerprint"] is None
+    assert database_schema.validate_posting_attempt(attempt) == []
+
+
+def test_historical_quote_fingerprint_remains_valid():
+    attempt = make_attempt()
+
+    assert isinstance(attempt["quote_fingerprint"], str)
+    assert database_schema.validate_posting_attempt(attempt) == []
+
+
 @pytest.mark.parametrize("state", database_schema.POSTING_ATTEMPT_STATES)
 def test_attempt_validator_accepts_every_supported_state(state):
     attempt = make_attempt()

@@ -4,7 +4,11 @@ import pytest
 
 import wiki_philosopher_bot.presentation as presentation
 import wiki_philosopher_bot.database_schema as database_schema
-from wiki_philosopher_bot.config import MAX_QUOTES
+from wiki_philosopher_bot.config import (
+    CURRENT_QUOTE_PARSER_VERSION,
+    MAX_QUOTES,
+    TELEGRAM_TEXT_MAX_LENGTH,
+)
 from wiki_philosopher_bot.database_schema import make_empty_database_entry
 
 
@@ -21,6 +25,14 @@ def structured_quote(text):
         },
         "retrieved_from": "Wikiquote",
     }
+
+
+def set_current_quote(philosopher, quote):
+    philosopher["quotes"].update({
+        "status": "available",
+        "parser_version": CURRENT_QUOTE_PARSER_VERSION,
+        "items": [quote],
+    })
 
 
 @pytest.mark.parametrize(
@@ -128,7 +140,8 @@ def test_format_philosopher_message_escapes_structured_attribution(monkeypatch):
         },
         "retrieved_from": "Wikiquote",
     }
-    monkeypatch.setattr(presentation, "get_random_quote", lambda *args, **kwargs: quote)
+    set_current_quote(philosopher, quote)
+    monkeypatch.setattr(presentation, "select_cached_quote", lambda *args, **kwargs: quote)
 
     message = presentation.format_philosopher_message(
         philosopher,
@@ -141,69 +154,31 @@ def test_format_philosopher_message_escapes_structured_attribution(monkeypatch):
 
     assert "— Work &lt; &amp; &gt; (1843), p. 47" in message
 
-def test_format_candidate_message_forwards_runtime_state(
-    monkeypatch,
-):
+def test_format_candidate_message_uses_only_current_cached_quote(monkeypatch):
     philosopher = make_empty_database_entry("Ada Lovelace")
-    database = {"Ada Lovelace": philosopher}
-    stats = {
-        "cached_quotes": 0,
-        "downloaded_quotes": 0,
-        "failed_quotes": 0,
-    }
-
-    stats_lock = threading.Lock()
-    persistence_lock = threading.Lock()
-    limiter = object()
-
+    quote = structured_quote("A synthetic quotation for testing.")
+    set_current_quote(philosopher, quote)
     captured = {}
 
-    def fake_get_random_quote(
-        title,
-        database_arg,
-        stats_arg,
-        stats_lock_arg,
-        persistence_lock_arg,
-        data_folder_arg,
-        max_quotes,
-        limiter=None,
-    ):
-        captured["title"] = title
-        captured["database"] = database_arg
-        captured["stats"] = stats_arg
-        captured["stats_lock"] = stats_lock_arg
-        captured["persistence_lock"] = persistence_lock_arg
-        captured["data_folder"] = data_folder_arg
-        captured["max_quotes"] = max_quotes
-        captured["limiter"] = limiter
+    def fake_select_cached_quote(items, chooser):
+        captured["items"] = items
+        captured["chooser"] = chooser
+        return quote
 
-        return structured_quote("A synthetic quotation for testing.")
-
-    monkeypatch.setattr(
-        presentation,
-        "get_random_quote",
-        fake_get_random_quote,
-    )
+    monkeypatch.setattr(presentation, "select_cached_quote", fake_select_cached_quote)
 
     result = presentation.format_philosopher_message(
         philosopher,
-        database,
-        stats,
-        stats_lock,
-        persistence_lock,
+        {"Ada Lovelace": philosopher},
+        {},
+        threading.Lock(),
+        threading.Lock(),
         "temporary-data",
         max_quotes=MAX_QUOTES,
-        limiter=limiter,
+        limiter=object(),
     )
 
-    assert captured["title"] == "Ada Lovelace"
-    assert captured["database"] is database
-    assert captured["stats"] is stats
-    assert captured["stats_lock"] is stats_lock
-    assert captured["persistence_lock"] is persistence_lock
-    assert captured["data_folder"] == "temporary-data"
-    assert captured["limiter"] is limiter
-
+    assert captured["items"] == [quote]
     assert isinstance(result, str)
 
 
@@ -216,11 +191,9 @@ def test_format_philosopher_message_reads_summary_and_years_from_canonical_entry
     philosopher["wikidata"]["death_year"] = 1852
     database = {"Ada Lovelace": philosopher}
 
-    monkeypatch.setattr(
-        presentation,
-        "get_random_quote",
-        lambda *args, **kwargs: structured_quote("A canonical quote."),
-    )
+    quote = structured_quote("A canonical quote.")
+    set_current_quote(philosopher, quote)
+    monkeypatch.setattr(presentation, "select_cached_quote", lambda *args, **kwargs: quote)
 
     message = presentation.format_philosopher_message(
         philosopher,
@@ -258,17 +231,70 @@ def test_format_life_years_handles_bce_ce_and_unknown_dates(
     assert presentation.format_life_years(birth, death) == expected
 
 
+def test_summary_life_date_conflict_suppresses_only_heading_years():
+    philosopher = make_empty_database_entry("Catherine Descartes")
+    original_summary = (
+        "Catherine Descartes (1637–1706) was a French poet and philosopher."
+    )
+    philosopher["summary"]["text"] = original_summary
+    philosopher["wikidata"]["birth_year"] = 1637
+    philosopher["wikidata"]["death_year"] = 1715
+
+    assert presentation.summary_leading_life_year_range(philosopher) == (1637, 1706)
+    assert presentation.has_definite_summary_life_date_conflict(philosopher) is True
+
+    message = presentation.prepare_philosopher_message(philosopher, None).message_text
+
+    assert "<b>Catherine Descartes</b>" in message
+    assert "(1637–1715)" not in message
+    assert original_summary in message
+    assert philosopher["summary"]["text"] == original_summary
+
+
+def test_matching_summary_life_years_keep_normal_heading_years():
+    philosopher = make_empty_database_entry("Catherine Descartes")
+    philosopher["summary"]["text"] = "Catherine Descartes (1637-1706) was a philosopher."
+    philosopher["wikidata"]["birth_year"] = 1637
+    philosopher["wikidata"]["death_year"] = 1706
+
+    assert presentation.has_definite_summary_life_date_conflict(philosopher) is False
+    assert "<b>Catherine Descartes (1637–1706)</b>" in (
+        presentation.prepare_philosopher_message(philosopher, None).message_text
+    )
+
+
+@pytest.mark.parametrize(
+    ("summary", "birth_year", "death_year"),
+    (
+        ("Catherine Descartes (1637–1706) was a philosopher.", None, None),
+        ("Another person (1637–1706) was a philosopher.", 1637, 1715),
+        ("Catherine Descartes (born 1949) is a philosopher.", 1949, 2000),
+        ("", 1637, 1715),
+        ("Catherine Descartes (c. 1637–1706) was a philosopher.", 1637, 1715),
+    ),
+)
+def test_only_strict_leading_positive_year_ranges_can_be_conflicts(
+    summary,
+    birth_year,
+    death_year,
+):
+    philosopher = make_empty_database_entry("Catherine Descartes")
+    philosopher["summary"]["text"] = summary
+    philosopher["wikidata"]["birth_year"] = birth_year
+    philosopher["wikidata"]["death_year"] = death_year
+
+    assert presentation.has_definite_summary_life_date_conflict(philosopher) is False
+
+
 def test_format_philosopher_message_formats_thales_bce_years(monkeypatch):
     philosopher = make_empty_database_entry("Thales of Miletus")
     philosopher["summary"]["text"] = "A philosopher."
     philosopher["wikidata"]["birth_year"] = -650
     philosopher["wikidata"]["death_year"] = -548
 
-    monkeypatch.setattr(
-        presentation,
-        "get_random_quote",
-        lambda *args, **kwargs: structured_quote("A canonical quote."),
-    )
+    quote = structured_quote("A canonical quote.")
+    set_current_quote(philosopher, quote)
+    monkeypatch.setattr(presentation, "select_cached_quote", lambda *args, **kwargs: quote)
 
     message = presentation.format_philosopher_message(
         philosopher,
@@ -293,13 +319,8 @@ def test_format_philosopher_message_normalizes_display_quote_without_mutating_ca
         "immortality of the soul. < & >"
     )
     quote = structured_quote(stored_quote)
-    philosopher["quotes"]["items"] = [quote]
-
-    monkeypatch.setattr(
-        presentation,
-        "get_random_quote",
-        lambda *args, **kwargs: philosopher["quotes"]["items"][0],
-    )
+    set_current_quote(philosopher, quote)
+    monkeypatch.setattr(presentation, "select_cached_quote", lambda *args, **kwargs: quote)
 
     message = presentation.format_philosopher_message(
         philosopher,
@@ -459,10 +480,69 @@ def test_prepare_philosopher_message_changes_with_selected_quote_and_rejects_inv
 
     assert first.quote_fingerprint != second.quote_fingerprint
     assert first.message_fingerprint != second.message_fingerprint
-    with pytest.raises(ValueError, match="selected_quote"):
-        presentation.prepare_philosopher_message(philosopher, None)
+    summary_only = presentation.prepare_philosopher_message(philosopher, None)
+    assert summary_only.selected_quote is None
+    assert summary_only.quote_fingerprint is None
     with pytest.raises(ValueError, match="structured"):
         presentation.prepare_philosopher_message(philosopher, {"text": "Missing source."})
+
+
+def test_summary_is_rendered_before_optional_quote_and_summary_only_has_no_artifacts():
+    philosopher = make_empty_database_entry("Ada Lovelace")
+    philosopher["summary"]["text"] = "The required summary."
+    quote = structured_quote("Optional quote.")
+
+    with_quote = presentation.prepare_philosopher_message(philosopher, quote)
+    without_quote = presentation.prepare_philosopher_message(philosopher, None)
+
+    assert with_quote.message_text.index("The required summary.") < with_quote.message_text.index("Optional quote.")
+    assert "<i>" not in without_quote.message_text
+    assert "— " not in without_quote.message_text
+    assert without_quote.quote_fingerprint is None
+
+
+@pytest.mark.parametrize(
+    "quote_state",
+    (
+        {"status": "available", "parser_version": CURRENT_QUOTE_PARSER_VERSION - 1, "items": [structured_quote("Stale quote.")]},
+        {"status": "failed", "parser_version": CURRENT_QUOTE_PARSER_VERSION, "items": [structured_quote("Failed quote.")]},
+        {"status": "not_found", "parser_version": CURRENT_QUOTE_PARSER_VERSION, "items": []},
+        {"status": "available", "parser_version": CURRENT_QUOTE_PARSER_VERSION, "items": []},
+    ),
+)
+def test_stale_or_unavailable_quotes_are_not_selected_from_cache(monkeypatch, quote_state):
+    philosopher = make_empty_database_entry("Ada Lovelace")
+    philosopher["quotes"].update(quote_state)
+    monkeypatch.setattr(
+        presentation,
+        "select_cached_quote",
+        lambda *args, **kwargs: pytest.fail("stale quote must not be selected"),
+    )
+
+    assert presentation.select_quote_for_post(
+        philosopher, {}, {}, threading.Lock(), threading.Lock(), "unused",
+    ) is None
+
+
+def test_over_limit_quote_is_dropped_but_summary_only_payload_is_retained():
+    philosopher = make_empty_database_entry("Ada Lovelace")
+    philosopher["summary"]["text"] = "S" * 100
+    quote = structured_quote("Q" * TELEGRAM_TEXT_MAX_LENGTH)
+
+    prepared = presentation.prepare_philosopher_message(philosopher, quote)
+
+    assert prepared.selected_quote is None
+    assert prepared.quote_fingerprint is None
+    assert "<i>" not in prepared.message_text
+    assert presentation.telegram_message_fits_limit(prepared.message_text)
+
+
+def test_over_limit_summary_only_payload_fails_without_truncation():
+    philosopher = make_empty_database_entry("Ada Lovelace")
+    philosopher["summary"]["text"] = "S" * (TELEGRAM_TEXT_MAX_LENGTH + 1)
+
+    with pytest.raises(ValueError, match="exceeds"):
+        presentation.prepare_philosopher_message(philosopher, None)
 
 
 def test_selection_helper_renders_the_exact_quote_chosen_by_injected_chooser(monkeypatch):
@@ -471,7 +551,12 @@ def test_selection_helper_renders_the_exact_quote_chosen_by_injected_chooser(mon
         structured_quote("First exact quote."),
         structured_quote("Second exact quote."),
     ]
-    monkeypatch.setattr(presentation, "get_random_quote", lambda *args, **kwargs: quotes[1])
+    philosopher["quotes"].update({
+        "status": "available",
+        "parser_version": CURRENT_QUOTE_PARSER_VERSION,
+        "items": quotes,
+    })
+    monkeypatch.setattr(presentation, "select_cached_quote", lambda *args, **kwargs: quotes[1])
 
     selected = presentation.select_quote_for_post(
         philosopher, {philosopher["title"]: philosopher}, {}, threading.Lock(), threading.Lock(), "unused",
@@ -486,14 +571,15 @@ def test_selection_helper_renders_the_exact_quote_chosen_by_injected_chooser(mon
 def test_selection_helper_forwards_an_injected_chooser(monkeypatch):
     philosopher = make_empty_database_entry("Ada Lovelace")
     quote = structured_quote("Selected by injected chooser.")
+    set_current_quote(philosopher, quote)
     captured = {}
 
-    def fake_get_random_quote(*args, **kwargs):
-        captured["chooser"] = kwargs["chooser"]
+    def fake_select_cached_quote(items, chooser):
+        captured["chooser"] = chooser
         return quote
 
     chooser = object()
-    monkeypatch.setattr(presentation, "get_random_quote", fake_get_random_quote)
+    monkeypatch.setattr(presentation, "select_cached_quote", fake_select_cached_quote)
 
     assert presentation.select_quote_for_post(
         philosopher, {}, {}, threading.Lock(), threading.Lock(), "unused", chooser=chooser,

@@ -2350,12 +2350,22 @@ def get_random_quote(
         limiter=limiter,
     )
 
-    if not quotes:
+    return select_cached_quote(quotes, chooser=chooser)
+
+
+def select_cached_quote(quotes, chooser=random.choices):
+    """Choose supplied current quote items without fetching or writing."""
+    if not isinstance(quotes, list) or not quotes:
         return None
 
     good_quotes = [
         q for q in quotes
-        if 2 <= q["word_count"] <= 50
+        if (
+            isinstance(q, dict)
+            and isinstance(q.get("word_count"), int)
+            and not isinstance(q.get("word_count"), bool)
+            and 2 <= q["word_count"] <= 50
+        )
     ]
 
     if not good_quotes:

@@ -18,7 +18,7 @@ from wiki_philosopher_bot.database_schema import (
 from wiki_philosopher_bot.cache import rewrite_database
 from wiki_philosopher_bot.utils import (
     chunk_list,
-    is_posting_candidate,
+    has_current_usable_quotes,
     is_semantically_postable_philosopher,
 )
 from wiki_philosopher_bot.wikipedia_api import (
@@ -39,6 +39,22 @@ class ExternalLinkLookup:
 
 class ExternalLinksApplyValidationError(ValueError):
     """A reviewed enrichment report can no longer be applied safely."""
+
+
+def _is_quote_external_links_candidate(entry):
+    """Preserve the pre-summary-first Wikiquote/Wikisource audit scope.
+
+    These audits were reviewed for accepted, unposted records with a current
+    quote cache. They must not silently expand merely because ordinary posting
+    now permits a summary-only payload. Gutenberg deliberately uses its own
+    stable semantic-philosopher policy below.
+    """
+    return (
+        is_semantically_postable_philosopher(entry)
+        and has_current_usable_quotes(entry)
+        and isinstance(entry.get("posting"), dict)
+        and entry["posting"].get("has_been_posted") is False
+    )
 
 
 def external_links_for_entry(entry):
@@ -289,7 +305,7 @@ def validate_reviewed_external_links_apply(database, report):
             _report_error("Reviewed title no longer exists: {}".format(title))
         if entry.get("title") != title:
             _report_error("Current entry title does not match reviewed title: {}".format(title))
-        if not is_posting_candidate(entry):
+        if not _is_quote_external_links_candidate(entry):
             _report_error("Reviewed title is no longer post eligible: {}".format(title))
         reviewed_qid = proposal["qid"]
         if reviewed_qid is not None and _qid_for_entry(entry) != reviewed_qid:
@@ -633,7 +649,7 @@ def audit_external_links(
     # are deduplicated for the second pass.
     for title in sorted(database):
         entry = database[title]
-        if not is_posting_candidate(entry):
+        if not _is_quote_external_links_candidate(entry):
             skipped_records.append({"title": title})
             continue
         current = external_links_for_entry(entry)

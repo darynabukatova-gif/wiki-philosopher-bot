@@ -15,6 +15,7 @@ from wiki_philosopher_bot.telegram_bot import (
 def postable_entry():
     entry = schema.make_empty_database_entry("Ada Lovelace")
     entry["evaluation"]["status"] = "accepted"
+    entry["summary"]["text"] = "A canonical Wikipedia summary."
     entry["quotes"].update({
         "status": "available",
         "parser_version": CURRENT_QUOTE_PARSER_VERSION,

@@ -60,23 +60,28 @@ Each canonical entry owns identity fields plus `summary`, `wikidata`,
   migration provenance/conflicts while updating the current evaluation bundle.
 - `database[title]["posting"]` owns `has_been_posted`, `posted_at`, and
   `legacy_posted_without_timestamp`. Candidate eligibility requires accepted
-  evaluation, non-empty quotes, and `has_been_posted == false`. Selection uses
-  `max(content_confidence, -1) + 2` as its only weight. Quote count affects
-  eligibility only because at least one quote is required; additional quotes
-  do not increase posting probability. After a philosopher is selected, quote
-  selection separately gives shorter eligible quotes a moderate
-  `1 / sqrt(max(word_count, 8))` presentation preference; every eligible quote
-  remains selectable.
+  evaluation, a non-empty stored Wikipedia summary, and
+  `has_been_posted == false`. Current quotes are optional enrichment: only an
+  `available`, non-empty cache at the current parser version may be selected;
+  stale or failed quote caches are never fetched during posting preparation.
+  Selection weight is `max(content_confidence, -1) + 2`, plus `1` for a
+  current quote, `2` for a valid Wikisource link, and `2` for a valid Project
+  Gutenberg link. Wikiquote has no separate bonus because it would currently
+  double-count quote availability. Quote count never increases posting
+  probability. When present, quote selection separately gives shorter eligible
+  quotes a moderate `1 / sqrt(max(word_count, 8))` presentation preference.
   A successful new post appends
   one integer Unix timestamp and preserves both existing timestamps and the
   legacy unknown-date marker.
 
-Posting order is candidate selection → explicit quote selection → deterministic
-message preparation → Telegram send → canonical posting persistence on
-success. Quote selection retains its existing weighted policy; preparation
-receives that exact quote and produces an immutable payload snapshot containing
-the final HTML text plus quote/message fingerprints. Telegram failure makes no
-posting mutation. A post that succeeds externally but fails canonical
+Posting order is candidate selection → optional cached quote selection →
+deterministic summary-first message preparation → Telegram send → canonical
+posting persistence on success. The summary is required core content; a quote
+is omitted when unavailable or when including it would exceed Telegram's
+4096-character text limit. Preparation produces an immutable payload snapshot
+containing final HTML plus a message fingerprint and a quote fingerprint when a
+quote is included (`null` otherwise). Telegram failure makes no posting
+mutation. A post that succeeds externally but fails canonical
 persistence is reported without a `posted.json` fallback, so duplicate-post
 risk remains.
 
@@ -230,8 +235,9 @@ shape: `{"valid": false, "reason": "no_qid", "title": ...}` or
 
 `max_quotes` remains a compatibility parameter. The current runtime stores all
 valid fetched quotes and evaluates all stored quotes; it does not cap fetching,
-storage, or evaluation at `MAX_QUOTES`. Display selection still chooses one
-quote through `get_random_quote()`.
+storage, or evaluation at `MAX_QUOTES`. Fetch-capable callers use
+`get_random_quote()`; posting preparation selects only from an already-current
+cache and never calls it for stale or unavailable quote state.
 
 ## Historical source: `quote_failures.jsonl`
 

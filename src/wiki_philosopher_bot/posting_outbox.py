@@ -31,6 +31,7 @@ from wiki_philosopher_bot.telegram_bot import (
 )
 from wiki_philosopher_bot.utils import (
     get_random_philosopher,
+    has_usable_posting_summary,
     is_posting_candidate,
     is_semantically_postable_philosopher,
 )
@@ -135,14 +136,9 @@ def prepare_posting_attempt(
             ):
                 error_kind = "already_posted"
                 error_summary = "The requested title has already been posted."
-            elif not (
-                isinstance(philosopher.get("quotes"), dict)
-                and philosopher["quotes"].get("status") == "available"
-                and isinstance(philosopher["quotes"].get("items"), list)
-                and philosopher["quotes"]["items"]
-            ):
-                error_kind = "no_quote"
-                error_summary = "The requested title has no quote available for preparation."
+            elif not has_usable_posting_summary(philosopher):
+                error_kind = "no_usable_summary"
+                error_summary = "The requested title has no usable Wikipedia summary for preparation."
             else:
                 error_kind = "title_not_postable"
                 error_summary = "The requested title does not satisfy current posting requirements."
@@ -178,16 +174,16 @@ def prepare_posting_attempt(
         limiter=limiter,
         chooser=quote_chooser,
     )
-    if selected_quote is None:
+    try:
+        prepared = prepare_philosopher_message(philosopher, selected_quote)
+    except ValueError as error:
         return PostingOperationResult(
             phase="prepare",
             ok=False,
             title=title,
-            error_kind="no_quote",
-            error_summary="The selected candidate has no quote available for preparation.",
+            error_kind="message_too_long",
+            error_summary="The required summary-first message could not fit Telegram's text limit.",
         )
-
-    prepared = prepare_philosopher_message(philosopher, selected_quote)
     attempt = make_pending_posting_attempt(
         title,
         prepared.selected_quote,

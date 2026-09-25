@@ -107,6 +107,25 @@ def test_existing_valid_links_are_preserved_without_lookup():
     assert report["changes_or_conflicts"] == []
 
 
+def test_summary_only_posting_candidate_does_not_broaden_quote_link_audit_scope():
+    entry = _entry("Summary Only", "Q1")
+    entry["summary"]["text"] = "A usable summary."
+    entry["quotes"].update({
+        "status": "not_found",
+        "items": [],
+        "parser_version": CURRENT_QUOTE_PARSER_VERSION,
+    })
+
+    report = audit_external_links(
+        {entry["title"]: entry},
+        wikiquote_lookup=lambda *args, **kwargs: pytest.fail("quote audit scope expanded"),
+        wikidata_lookup=lambda *args, **kwargs: pytest.fail("quote audit scope expanded"),
+    )
+
+    assert report["post_eligible_records"] == 0
+    assert report["non_post_eligible_records_skipped"] == 1
+
+
 def test_wikiquote_redirect_url_is_proposed_only_after_lookup_evidence():
     entry = _entry("Ada")
     report = audit_external_links(

@@ -16,6 +16,7 @@ import wiki_philosopher_bot.telegram_bot as telegram_bot
 def postable_entry(title):
     entry = make_empty_database_entry(title)
     entry["evaluation"]["status"] = "accepted"
+    entry["summary"]["text"] = "A canonical Wikipedia summary."
     entry["quotes"].update({
         "status": "available",
         "parser_version": CURRENT_QUOTE_PARSER_VERSION,
@@ -112,6 +113,21 @@ def test_cli_all_includes_ineligible_titles_with_compact_reason(tmp_path, capsys
     assert "eligible: no\n" in output
     assert "posted: yes\n" in output
     assert "status: already posted\n" in output
+
+
+def test_default_finder_includes_summary_only_candidate(tmp_path, capsys):
+    entry = postable_entry("Catherine Descartes")
+    entry["quotes"].update({
+        "status": "not_found", "items": [],
+        "parser_version": CURRENT_QUOTE_PARSER_VERSION,
+    })
+    write_database(tmp_path, [entry])
+
+    assert find_title_cli.main(["catherine", "--data-folder", str(tmp_path)]) == 0
+
+    assert capsys.readouterr().out == (
+        "Catherine Descartes\neligible: yes\nposted: no\nquotes: 0\n"
+    )
 
 
 def test_cli_reports_no_eligible_matches_and_all_can_diagnose_them(tmp_path, capsys):

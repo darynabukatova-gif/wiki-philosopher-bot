@@ -26,6 +26,7 @@ def isolate_run_reports(monkeypatch, tmp_path):
 def make_postable_entry(title):
     entry = make_empty_database_entry(title)
     entry["evaluation"]["status"] = "accepted"
+    entry["summary"]["text"] = "A canonical Wikipedia summary."
     entry["quotes"] = {
         "status": "available",
         "items": [
@@ -777,6 +778,7 @@ def test_runtime_evaluation_state_works_without_legacy_result_files(
         "status": "accepted",
         "algorithm_version": CURRENT_EVALUATION_ALGORITHM_VERSION,
     })
+    accepted["summary"]["text"] = "A canonical Wikipedia summary."
     accepted["quotes"].update({
         "status": "available",
         "items": [{

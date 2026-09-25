@@ -8,7 +8,10 @@ import requests
 import wiki_philosopher_bot.cache as cache
 import wiki_philosopher_bot.database_schema as schema
 import wiki_philosopher_bot.posting_outbox as outbox
-from wiki_philosopher_bot.config import CURRENT_QUOTE_PARSER_VERSION
+from wiki_philosopher_bot.config import (
+    CURRENT_QUOTE_PARSER_VERSION,
+    TELEGRAM_TEXT_MAX_LENGTH,
+)
 from wiki_philosopher_bot.telegram_bot import (
     TELEGRAM_OUTCOME_AMBIGUOUS,
     TELEGRAM_OUTCOME_CONFIRMED_SUCCESS,
@@ -23,6 +26,7 @@ NOW = datetime(2026, 8, 25, 15, 0, 0, tzinfo=timezone.utc)
 def postable_entry(title="Ada Lovelace"):
     entry = schema.make_empty_database_entry(title)
     entry["evaluation"]["status"] = "accepted"
+    entry["summary"]["text"] = "A canonical Wikipedia summary."
     entry["quotes"].update({
         "status": "available",
         "parser_version": CURRENT_QUOTE_PARSER_VERSION,
@@ -256,8 +260,7 @@ def test_prepare_manual_title_uses_exact_candidate_and_normal_quote_path(tmp_pat
         ("Unknown", lambda entry: None, "title_not_found"),
         ("Ada Lovelace", lambda entry: entry["evaluation"].__setitem__("status", "rejected"), "title_not_eligible"),
         ("Ada Lovelace", lambda entry: entry["posting"].__setitem__("has_been_posted", True), "already_posted"),
-        ("Ada Lovelace", lambda entry: entry["quotes"].update({"status": "not_found", "items": []}), "no_quote"),
-        ("Ada Lovelace", lambda entry: entry["quotes"].__setitem__("parser_version", CURRENT_QUOTE_PARSER_VERSION - 1), "title_not_postable"),
+        ("Ada Lovelace", lambda entry: entry["summary"].__setitem__("text", None), "no_usable_summary"),
     ],
 )
 def test_prepare_manual_title_failures_do_not_fall_back_or_mutate(tmp_path, monkeypatch, title, mutate, error_kind):
@@ -275,6 +278,31 @@ def test_prepare_manual_title_failures_do_not_fall_back_or_mutate(tmp_path, monk
     assert result.error_kind == error_kind
     assert entry["posting"]["attempts"] == []
     assert (tmp_path / "database.jsonl").read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    "quote_update",
+    (
+        {"status": "not_found", "items": [], "parser_version": CURRENT_QUOTE_PARSER_VERSION},
+        {"status": "available", "items": [], "parser_version": CURRENT_QUOTE_PARSER_VERSION},
+        {"status": "available", "parser_version": CURRENT_QUOTE_PARSER_VERSION - 1},
+    ),
+)
+def test_prepare_manual_title_accepts_summary_only_without_quote_selection(
+    tmp_path, monkeypatch, quote_update,
+):
+    entry = postable_entry()
+    entry["quotes"].update(quote_update)
+    database = {entry["title"]: entry}
+    write_database(tmp_path, database)
+    monkeypatch.setattr(outbox, "select_quote_for_post", lambda *args, **kwargs: None)
+
+    result = prepare(database, tmp_path, title="Ada Lovelace")
+
+    assert result.ok is True
+    attempt = database[entry["title"]]["posting"]["attempts"][-1]
+    assert attempt["quote_fingerprint"] is None
+    assert "<i>" not in attempt["message_text"]
 
 
 def test_unresolved_attempt_blocks_manual_title_before_selection(tmp_path, monkeypatch):
@@ -312,6 +340,47 @@ def test_manual_title_preparation_uses_normal_external_link_message_and_fingerpr
     assert "Wikisource</a> · " in attempt["message_text"]
     assert '<a href="https://www.gutenberg.org/ebooks/author/44">Gutenberg</a>' in attempt["message_text"]
     assert attempt["message_fingerprint"] == schema.message_fingerprint(attempt["message_text"])
+
+
+def test_summary_only_attempt_dispatches_the_exact_stored_payload(tmp_path):
+    entry = postable_entry()
+    entry["quotes"].update({"status": "not_found", "items": []})
+    database = {entry["title"]: entry}
+    write_database(tmp_path, database)
+    attempt = schema.make_pending_posting_attempt(
+        entry["title"], None, "Exact summary-only payload", attempt_id="summary-only", now=NOW,
+    )
+    cache.append_posting_attempt(
+        database, entry["title"], attempt, "database.jsonl", str(tmp_path), threading.Lock(),
+    )
+    sent = []
+
+    result = outbox.dispatch_posting_attempt(
+        database, attempt["attempt_id"], threading.Lock(), str(tmp_path), "database.jsonl",
+        now=NOW,
+        send=lambda message: sent.append(message) or TelegramResult(
+            True, {"ok": True}, None, TELEGRAM_OUTCOME_CONFIRMED_SUCCESS, 42,
+        ),
+    )
+
+    assert result.ok is True
+    assert sent == ["Exact summary-only payload"]
+    assert database[entry["title"]]["posting"]["attempts"][-1]["state"] == "sent"
+
+
+def test_over_limit_summary_only_prepare_fails_before_pending_persistence(tmp_path):
+    entry = postable_entry()
+    entry["summary"]["text"] = "S" * (TELEGRAM_TEXT_MAX_LENGTH + 1)
+    database = {entry["title"]: entry}
+    path = write_database(tmp_path, database)
+    before = path.read_bytes()
+
+    result = prepare(database, tmp_path, title=entry["title"])
+
+    assert result.ok is False
+    assert result.error_kind == "message_too_long"
+    assert entry["posting"]["attempts"] == []
+    assert path.read_bytes() == before
 
 
 def test_dispatch_sends_exact_stored_payload_once_without_repreparing_or_link_lookup(tmp_path, monkeypatch):

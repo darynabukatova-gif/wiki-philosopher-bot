@@ -1,16 +1,19 @@
 from html import escape
 from copy import deepcopy
 from dataclasses import dataclass
+import random
 import re
+from typing import Optional
 
 from wiki_philosopher_bot.utils import clean_title
-from wiki_philosopher_bot.config import MAX_QUOTES
+from wiki_philosopher_bot.config import MAX_QUOTES, TELEGRAM_TEXT_MAX_LENGTH
 from wiki_philosopher_bot.database_schema import (
     is_valid_external_link,
     message_fingerprint,
     quote_fingerprint,
 )
-from wiki_philosopher_bot.wikipedia_api import get_random_quote
+from wiki_philosopher_bot.wikipedia_api import select_cached_quote
+from wiki_philosopher_bot.utils import has_current_usable_quotes
 
 
 @dataclass(frozen=True)
@@ -23,9 +26,9 @@ class PreparedPhilosopherMessage:
     """
 
     title: str
-    selected_quote: dict
+    selected_quote: Optional[dict]
     message_text: str
-    quote_fingerprint: str
+    quote_fingerprint: Optional[str]
     message_fingerprint: str
 
 
@@ -146,6 +149,69 @@ def format_life_years(birth_year, death_year):
         return "(died {})".format(format_life_year(death_year))
     return ""
 
+
+def summary_leading_life_year_range(entry):
+    """Return an unambiguous leading Wikipedia life-year range, if present.
+
+    This deliberately recognises only the narrow form used for presentation
+    conflict protection: the stored summary must begin with the canonical or
+    display title followed by ``(YYYY–YYYY)`` (or a plain hyphen). It is not a
+    general-purpose natural-language date parser and must not be used to
+    backfill structured Wikidata dates.
+    """
+    if not isinstance(entry, dict):
+        return None
+    summary = entry.get("summary")
+    if (
+        not isinstance(summary, dict)
+        or summary.get("source") != "Wikipedia"
+        or not isinstance(summary.get("text"), str)
+        or not summary["text"]
+    ):
+        return None
+
+    titles = []
+    for value in (entry.get("display_title"), entry.get("title")):
+        if isinstance(value, str) and value and value not in titles:
+            titles.append(value)
+
+    for title in titles:
+        match = re.match(
+            r"^{}\s*\(([1-9]\d{{3}})\s*(?:–|-)\s*([1-9]\d{{3}})\)".format(
+                re.escape(title)
+            ),
+            summary["text"],
+        )
+        if match is not None:
+            return int(match.group(1)), int(match.group(2))
+    return None
+
+
+def has_definite_summary_life_date_conflict(entry):
+    """Whether structured dates contradict a strict stored summary range.
+
+    Neither source is chosen as authoritative here. A positive result merely
+    prevents one Telegram message from displaying mutually contradictory date
+    claims in its heading and summary.
+    """
+    summary_years = summary_leading_life_year_range(entry)
+    if summary_years is None or not isinstance(entry, dict):
+        return False
+    wikidata = entry.get("wikidata")
+    if not isinstance(wikidata, dict):
+        return False
+    birth_year = wikidata.get("birth_year")
+    death_year = wikidata.get("death_year")
+    if (
+        not isinstance(birth_year, int)
+        or isinstance(birth_year, bool)
+        or not isinstance(death_year, int)
+        or isinstance(death_year, bool)
+    ):
+        return False
+    return summary_years != (birth_year, death_year)
+
+
 def select_quote_for_post(
     philosopher,
     database,
@@ -157,53 +223,79 @@ def select_quote_for_post(
     limiter=None,
     chooser=None,
 ):
-    """Select one quote using the unchanged existing quote-selection policy."""
-    title = philosopher.get("title", "Unknown")
-    kwargs = {
-        "max_quotes": max_quotes,
-        "limiter": limiter,
-    }
-    if chooser is not None:
-        kwargs["chooser"] = chooser
-    return get_random_quote(
-        title,
-        database,
-        stats,
-        stats_lock,
-        persistence_lock,
-        data_folder,
-        **kwargs,
+    """Select only a current cached quote; never fetch during preparation."""
+    # Keep the established call signature while making all non-selection
+    # runtime arguments intentionally irrelevant to this pure cached path.
+    del database, stats, stats_lock, persistence_lock, data_folder, max_quotes, limiter
+    if not has_current_usable_quotes(philosopher):
+        return None
+    return select_cached_quote(
+        philosopher["quotes"]["items"],
+        chooser=chooser if chooser is not None else random.choices,
     )
 
 
-def prepare_philosopher_message(philosopher, selected_quote):
-    """Build one deterministic Telegram payload from an exact selected quote."""
+def telegram_message_fits_limit(message_text):
+    """Conservatively enforce Telegram's configured text payload limit."""
+    return isinstance(message_text, str) and len(message_text) <= TELEGRAM_TEXT_MAX_LENGTH
+
+
+def _render_philosopher_message(
+    display_title,
+    years,
+    summary,
+    quote_text,
+    attribution,
+    wiki_url,
+    external_reading_links,
+):
+    heading = "{} {}".format(display_title, years).strip()
+    lines = ["<b>{}</b>".format(heading), "", summary]
+    if quote_text is not None:
+        lines.extend(("", "<i>{}</i>".format(quote_text)))
+        if attribution:
+            lines.extend(("", attribution))
+    lines.extend(("", '<a href="{}">Wikipedia article</a>'.format(wiki_url)))
+    if external_reading_links:
+        lines.extend(("", external_reading_links))
+    return "\n".join(lines)
+
+
+def prepare_philosopher_message(philosopher, selected_quote=None):
+    """Build one deterministic summary-first Telegram payload.
+
+    Quotes are optional enrichment. A quote that makes the exact HTML payload
+    exceed Telegram's limit is omitted rather than truncated or reselected.
+    """
     if not isinstance(philosopher, dict):
         raise ValueError("philosopher must be an object")
     title = philosopher.get("title")
     if not isinstance(title, str) or not title:
         raise ValueError("philosopher.title must be a non-empty string")
-    if not isinstance(selected_quote, dict):
-        raise ValueError("selected_quote must be an object")
-    if not isinstance(selected_quote.get("text"), str) or not selected_quote["text"]:
-        raise ValueError("selected_quote.text must be a non-empty string")
-
-    # This also requires the structured source required by durable quote
-    # identity.  Presentation still renders citation-only fallbacks through
-    # format_quote_attribution.
-    selected_quote_fingerprint = quote_fingerprint(selected_quote)
-    quote = deepcopy(selected_quote)
+    if selected_quote is not None:
+        if not isinstance(selected_quote, dict):
+            raise ValueError("selected_quote must be an object or null")
+        if not isinstance(selected_quote.get("text"), str) or not selected_quote["text"]:
+            raise ValueError("selected_quote.text must be a non-empty string")
+        selected_quote_fingerprint = quote_fingerprint(selected_quote)
+        quote = deepcopy(selected_quote)
+    else:
+        selected_quote_fingerprint = None
+        quote = None
 
     wikidata = philosopher.get("wikidata", {})
     birth = wikidata.get("birth_year")
     death = wikidata.get("death_year")
-    quote_text = normalize_quote_text(quote["text"])
-    attribution = format_quote_attribution(quote)
+    quote_text = normalize_quote_text(quote["text"]) if quote is not None else None
+    attribution = format_quote_attribution(quote) if quote is not None else None
 
     summary = philosopher.get("summary", {}).get("text")
     summary = summary or "No summary available."
     
-    years = format_life_years(birth, death)
+    years = (
+        "" if has_definite_summary_life_date_conflict(philosopher)
+        else format_life_years(birth, death)
+    )
 
     wiki_title = title.replace(" ", "_")
 
@@ -215,22 +307,37 @@ def prepare_philosopher_message(philosopher, selected_quote):
     display_title = philosopher.get("display_title") or clean_title(title)
 
     display_title = escape(display_title)
-    quote_text = escape(quote_text)
+    quote_text = escape(quote_text) if quote_text is not None else None
     attribution = escape(attribution) if attribution else ""
     summary = escape(summary)
 
-    external_line = "\n\n    {}".format(external_reading_links) if external_reading_links else ""
-    message = f"""
-    <b>{display_title} {years}</b>
-
-    <i>{quote_text}</i>
-
-    {attribution}
-
-    {summary}
-
-    <a href="{wiki_url}">Wikipedia article</a>{external_line}
-    """
+    message = _render_philosopher_message(
+        display_title,
+        years,
+        summary,
+        quote_text,
+        attribution,
+        wiki_url,
+        external_reading_links,
+    )
+    if quote is not None and not telegram_message_fits_limit(message):
+        quote = None
+        selected_quote_fingerprint = None
+        message = _render_philosopher_message(
+            display_title,
+            years,
+            summary,
+            None,
+            None,
+            wiki_url,
+            external_reading_links,
+        )
+    if not telegram_message_fits_limit(message):
+        raise ValueError(
+            "Prepared Telegram message exceeds the {}-character limit".format(
+                TELEGRAM_TEXT_MAX_LENGTH
+            )
+        )
 
     return PreparedPhilosopherMessage(
         title=title,

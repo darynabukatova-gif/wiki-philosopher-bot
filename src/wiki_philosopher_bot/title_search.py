@@ -3,7 +3,7 @@
 import unicodedata
 
 from wiki_philosopher_bot.config import CURRENT_QUOTE_PARSER_VERSION
-from wiki_philosopher_bot.utils import is_posting_candidate
+from wiki_philosopher_bot.utils import has_usable_posting_summary, is_posting_candidate
 
 
 def normalize_title_search_text(value, *, strip_diacritics=False):
@@ -88,6 +88,8 @@ def posting_ineligibility_reasons(entry):
     posting = entry.get("posting") if isinstance(entry, dict) else None
     if not isinstance(evaluation, dict) or evaluation.get("status") != "accepted":
         reasons.append("evaluation is not accepted")
+    if not has_usable_posting_summary(entry):
+        reasons.append("usable Wikipedia summary is unavailable")
     if not isinstance(quotes, dict) or quotes.get("status") != "available":
         reasons.append("quotes are not available")
     elif not isinstance(quotes.get("items"), list) or not quotes["items"]:

@@ -244,9 +244,15 @@ def _validate_posting_attempt(attempt) -> List[str]:
         errors.append("posting.attempts.attempt_id must be a non-empty string")
     if not isinstance(attempt.get("title"), str) or not attempt.get("title").strip():
         errors.append("posting.attempts.title must be a non-empty string")
-    for field_name in ("quote_fingerprint", "message_fingerprint"):
-        if not _is_sha256_hex(attempt.get(field_name)):
-            errors.append("posting.attempts.{} must be a SHA-256 hex string".format(field_name))
+    quote_value = attempt.get("quote_fingerprint")
+    if quote_value is not None and not _is_sha256_hex(quote_value):
+        errors.append(
+            "posting.attempts.quote_fingerprint must be a SHA-256 hex string or null"
+        )
+    if not _is_sha256_hex(attempt.get("message_fingerprint")):
+        errors.append(
+            "posting.attempts.message_fingerprint must be a SHA-256 hex string"
+        )
     if not isinstance(attempt.get("message_text"), str) or not attempt.get("message_text"):
         errors.append("posting.attempts.message_text must be a non-empty string")
     for field_name in ("created_at", "state_changed_at"):
@@ -325,7 +331,9 @@ def make_pending_posting_attempt(
     attempt = {
         "attempt_id": attempt_id,
         "title": title,
-        "quote_fingerprint": quote_fingerprint(selected_quote),
+        "quote_fingerprint": (
+            quote_fingerprint(selected_quote) if selected_quote is not None else None
+        ),
         "message_fingerprint": message_fingerprint(message_text),
         "message_text": message_text,
         "created_at": timestamp,
