@@ -21,6 +21,17 @@ def get_telegram_settings():
     return telegram_url, chat_id
 
 
+
+def get_telegram_media_group_settings():
+    """Return the public-channel Telegram media-group destination."""
+    token = os.getenv("TELEGRAM_TOKEN")
+    chat_id = os.getenv("TELEGRAM_CHAT_ID")
+    telegram_url = (
+        "https://api.telegram.org/bot{}/sendMediaGroup".format(token)
+        if token else None
+    )
+    return telegram_url, chat_id
+
 def get_recent_death_telegram_settings():
     """Return the explicitly configured private destination for death alerts."""
     token = os.getenv("TELEGRAM_TOKEN")
@@ -81,6 +92,7 @@ WIKIDATA_DATE_REFRESH_REPORT_FOLDER = "reports/wikidata-date-refresh"
 PURGE_REPORT_FOLDER = "reports/purge"
 RECENT_DEATH_REPORT_FOLDER = "reports/recent-deaths"
 DEATH_REPORT_FOLDER = "reports/deaths"
+REPORT_POST_STATE_ROOT = "data/report-posts"
 EXTERNAL_LINK_REPORT_FOLDER = "reports/external-links"
 LOCAL_DATA_SYNC_REPORT_FOLDER = "reports/local-data-sync"
 
@@ -108,6 +120,8 @@ MAX_WORKERS=5
 CHUNK_SIZE=50
 MAX_QUOTES=5
 TELEGRAM_TEXT_MAX_LENGTH = 4096
+TELEGRAM_CAPTION_MAX_LENGTH = 1024
+TELEGRAM_MEDIA_GROUP_MAX_ITEMS = 10
 
 # Text processing
 SEARCH_TERM = "philosopher"

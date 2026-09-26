@@ -178,3 +178,32 @@ def test_ok_response_without_positive_message_id_is_not_confirmed_delivery():
     assert result.ok is True
     assert result.outcome == telegram_bot.TELEGRAM_OUTCOME_AMBIGUOUS
     assert result.message_id is None
+
+
+def test_send_media_group_uses_one_request_and_caption_only_on_first_item():
+    calls=[]
+    def post(url,data,files,timeout):
+        calls.append((url,data,files,timeout))
+        return FakeTelegramResponse(payload={"ok":True,"result":[{"message_id":10},{"message_id":11}]})
+    result=telegram_bot.send_media_group_to_chat(
+        [{"filename":"one.png","bytes":b"one"},{"filename":"two.png","bytes":b"two"}],
+        "<b>caption</b>","https://example/sendMediaGroup","chat",post=post)
+    assert result.outcome==telegram_bot.TELEGRAM_OUTCOME_CONFIRMED_SUCCESS
+    assert result.message_ids==[10,11] and len(calls)==1
+    import json
+    media=json.loads(calls[0][1]["media"])
+    assert media[0]["caption"]=="<b>caption</b>" and "caption" not in media[1]
+    assert list(calls[0][2])==["media1","media2"]
+
+def test_send_media_group_classifies_rejection_and_incomplete_success():
+    media=[{"filename":"one.png","bytes":b"one"},{"filename":"two.png","bytes":b"two"}]
+    rejected=telegram_bot.send_media_group_to_chat(media,"caption","url","chat",post=lambda *args, **kw: FakeTelegramResponse(payload={"ok":False}))
+    assert rejected.outcome==telegram_bot.TELEGRAM_OUTCOME_DEFINITE_REJECTION
+    incomplete=telegram_bot.send_media_group_to_chat(media,"caption","url","chat",post=lambda *args, **kw: FakeTelegramResponse(payload={"ok":True,"result":[{"message_id":1}]}))
+    assert incomplete.outcome==telegram_bot.TELEGRAM_OUTCOME_AMBIGUOUS
+
+def test_send_media_group_transport_failure_is_ambiguous_and_no_retry():
+    calls=[]
+    def post(*args,**kwargs): calls.append(1); raise requests.Timeout("timeout")
+    result=telegram_bot.send_media_group_to_chat([{"filename":"one.png","bytes":b"x"}],"caption","url","chat",post=post)
+    assert result.outcome==telegram_bot.TELEGRAM_OUTCOME_AMBIGUOUS and len(calls)==1
