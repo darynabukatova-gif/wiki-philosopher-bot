@@ -70,8 +70,9 @@ PRIVATE_DATA_REPOSITORY_FOLDER = os.getenv(
     "PRIVATE_DATA_REPOSITORY_FOLDER", "../wiki-philosopher-bot-data"
 )
 OPERATIONAL_BACKUP_RETENTION_DAYS = 90
-# Exact calendar deaths are recent when discovered within this many days.
-RECENT_DEATH_WINDOW_DAYS = 365
+# Exact deaths are recent when newly discovered within this many calendar years.
+# Calendar subtraction clamps leap day to February 28.
+RECENT_DEATH_WINDOW_YEARS = 7
 
 RUN_REPORT_FOLDER = "reports/runs"
 POSTING_ATTEMPT_REPORT_FOLDER = "reports/runs/posting-attempts"

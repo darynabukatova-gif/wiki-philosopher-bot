@@ -142,9 +142,10 @@ sibling directory.
 Recent-death notification deployment is currently **manual-only**. It uses the
 same private authoritative data repository as philosopher posting, but it is a
 separate workflow: **Actions → Manual recent-death monitor → Run workflow**.
-Leave both inputs blank for the normal scan, optionally set `recent_days` to a
-positive window override (the default is 365), or provide one exact canonical
-title for supervised investigation.
+Leave both inputs blank for the normal scan. The configured default is an
+inclusive seven-calendar-year window; the workflow's optional `recent_days`
+input deliberately selects the legacy fixed-day override. An exact canonical
+title may also be provided for supervised investigation.
 
 The workflow first discovers death facts and stores any new notification as a
 pending exact payload, pushes that database checkpoint, then dispatches only
@@ -215,8 +216,11 @@ The installed console commands are:
 
   Recent-death discovery is a durable prepare step: `--apply` can query
   Wikidata and atomically store a discovered death fact plus one exact pending
-  private-notification event, but it never contacts Telegram. It uses a
-  configurable 365-day exact-date window (`--recent-days N`). After the
+  private-notification event, but it never contacts Telegram. By default it
+  uses an inclusive seven-calendar-year exact-date window (`--recent-years N`
+  overrides it); `--recent-days N` remains an explicit fixed-day compatibility
+  override. Known exact deaths newly covered by a widened policy are reported
+  for review and never become automatic notification backlog. After the
   pending database has reached its authoritative checkpoint, dispatch one
   explicitly identified event:
 

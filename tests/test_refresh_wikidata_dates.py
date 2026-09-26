@@ -276,14 +276,19 @@ def test_detect_recent_death_update_cases():
     assert refresh_wikidata_dates.detect_recent_death_update(
         None, None, 2026, "2026-06-29", today=today,
     ) is True
+    # Adding day precision to an already-known death year is enrichment, not
+    # a newly discovered death eligible for automatic notification.
     assert refresh_wikidata_dates.detect_recent_death_update(
         2026, None, 2026, "2026-06-29", today=today,
-    ) is True
+    ) is False
     assert refresh_wikidata_dates.detect_recent_death_update(
         2026, "2026-06-29", 2026, "2026-06-29", today=today,
     ) is False
     assert refresh_wikidata_dates.detect_recent_death_update(
         None, None, 2020, "2020-01-01", today=today,
+    ) is True
+    assert refresh_wikidata_dates.detect_recent_death_update(
+        None, None, 2019, "2019-08-20", today=today,
     ) is False
     assert refresh_wikidata_dates.detect_recent_death_update(
         None, None, 2027, "2027-01-01", today=today,

@@ -20,10 +20,13 @@ from wiki_philosopher_bot.config import (
     DATABASE_BACKUP_FOLDER,
     OPERATIONAL_BACKUP_RETENTION_DAYS,
     RATE_LIMIT,
-    RECENT_DEATH_WINDOW_DAYS,
+    RECENT_DEATH_WINDOW_YEARS,
 )
 from wiki_philosopher_bot.cli.refresh_wikidata_dates import detect_recent_death_update
 from wiki_philosopher_bot.run_reporting import save_recent_death_report
+from wiki_philosopher_bot.date_policy import (
+    date_is_within_recent_policy, recent_death_policy,
+)
 from wiki_philosopher_bot.runtime import persistence_lock
 from wiki_philosopher_bot.database_schema import (
     make_pending_recent_death_notification, recent_death_notification_for_date,
@@ -53,14 +56,14 @@ def _limit_argument(value):
     return limit
 
 
-def _recent_days_argument(value):
+def _positive_window_argument(value):
     try:
-        recent_days = int(value)
+        amount = int(value)
     except ValueError as error:
-        raise argparse.ArgumentTypeError("recent days must be a positive integer") from error
-    if recent_days <= 0:
-        raise argparse.ArgumentTypeError("recent days must be a positive integer")
-    return recent_days
+        raise argparse.ArgumentTypeError("window must be a positive integer") from error
+    if amount <= 0:
+        raise argparse.ArgumentTypeError("window must be a positive integer")
+    return amount
 
 
 def parse_args(argv=None):
@@ -71,7 +74,17 @@ def parse_args(argv=None):
     parser.add_argument("--limit", type=_limit_argument, default=None)
     parser.add_argument("--title", action="append", default=[])
     parser.add_argument("--result-json", help="write this invocation result to an explicit machine-readable JSON file")
-    parser.add_argument("--recent-days", type=_recent_days_argument, default=RECENT_DEATH_WINDOW_DAYS, help="exact-death notification window (default: %(default)s)")
+    window = parser.add_mutually_exclusive_group()
+    window.add_argument(
+        "--recent-years", type=_positive_window_argument, default=None,
+        help="calendar-year notification window (default: {})".format(
+            RECENT_DEATH_WINDOW_YEARS
+        ),
+    )
+    window.add_argument(
+        "--recent-days", type=_positive_window_argument, default=None,
+        help="legacy explicit fixed-day notification window",
+    )
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--dry-run", action="store_true")
     mode.add_argument("--apply", action="store_true")
@@ -81,8 +94,8 @@ def parse_args(argv=None):
     return args
 
 
-def recent_death_monitor_needs_processing(entry):
-    """Whether an accepted current Wikidata record has no known death year."""
+def recent_death_monitor_record_is_relevant(entry):
+    """Whether a record belongs to the accepted Wikidata-backed population."""
     if not isinstance(entry, dict):
         return False
     evaluation = entry.get("evaluation")
@@ -92,8 +105,37 @@ def recent_death_monitor_needs_processing(entry):
         and evaluation.get("status") == "accepted"
         and isinstance(wikidata, dict)
         and wikidata.get("status") == "available"
-        and wikidata.get("death_year") is None
     )
+
+
+def recent_death_monitor_needs_processing(entry):
+    """Whether a monitored record has no previously known death year."""
+    return (
+        recent_death_monitor_record_is_relevant(entry)
+        and entry["wikidata"].get("death_year") is None
+    )
+
+
+def policy_backfill_review(database, policy):
+    """Classify known exact deaths in-policy without making them actionable."""
+    records = []
+    for title in sorted(database):
+        entry = database[title]
+        if not recent_death_monitor_record_is_relevant(entry):
+            continue
+        death_date = entry["wikidata"].get("death_date")
+        if not date_is_within_recent_policy(death_date, policy):
+            continue
+        # Any durable event for this death, especially sent, already supplies
+        # the authoritative audit trail and duplicate suppression.
+        if recent_death_notification_for_date(entry, death_date) is not None:
+            continue
+        records.append({
+            "title": title,
+            "death_date": death_date,
+            "reason": "known-before-current-policy-window",
+        })
+    return {"count": len(records), "records": records}
 
 
 def select_eligible_titles(database):
@@ -219,7 +261,10 @@ def _new_results():
     }
 
 
-def run_apply(database, selected_titles, data_folder, limiter=None, today=None, recent_days=RECENT_DEATH_WINDOW_DAYS, now=None):
+def run_apply(
+    database, selected_titles, data_folder, limiter=None, today=None,
+    recent_policy=None, recent_years=None, recent_days=None, now=None,
+):
     """Discover Wikidata deaths and durably prepare, but never send, alerts.
 
     Recent exact deaths receive an exact pending event in the *same* atomic
@@ -230,6 +275,11 @@ def run_apply(database, selected_titles, data_folder, limiter=None, today=None, 
         limiter = RateLimiter(RATE_LIMIT)
     if today is None:
         today = date.today()
+    if recent_policy is None:
+        recent_policy = recent_death_policy(
+            today, years=recent_years, days=recent_days,
+            default_years=RECENT_DEATH_WINDOW_YEARS,
+        )
     results = _new_results()
     results.update({"pending_notifications": 0, "already_notified": 0,
                     "blocked_existing_notification": 0, "correction_review_required": 0})
@@ -280,7 +330,10 @@ def run_apply(database, selected_titles, data_folder, limiter=None, today=None, 
         if new_date and all_events and existing_same is None:
             results["correction_review_required"] += 1
             results["title_details"].append(_title_detail(title, old_year, old_date, old_year, old_date, "correction_review_required")); continue
-        is_recent = new_date is not None and detect_recent_death_update(old_year, old_date, new_year, new_date, today=today, recent_days=recent_days)
+        is_recent = new_date is not None and detect_recent_death_update(
+            old_year, old_date, new_year, new_date, today=today,
+            recent_policy=recent_policy,
+        )
         try:
             if is_recent and existing_same is None:
                 notification = make_pending_recent_death_notification(
@@ -306,11 +359,19 @@ def run_apply(database, selected_titles, data_folder, limiter=None, today=None, 
     return results
 
 
-def build_dry_run_report(database, selected_titles, limit, recent_days):
+def _default_recent_policy():
+    return recent_death_policy(
+        date.today(), default_years=RECENT_DEATH_WINDOW_YEARS,
+    )
+
+
+def build_dry_run_report(database, selected_titles, limit, recent_policy=None):
+    policy = recent_policy or _default_recent_policy()
     return {
         "mode": "dry-run",
         "operation": "recent-death-discovery-prepare",
-        "recent_window_days": recent_days,
+        "recent_window": policy,
+        "policy_backfill_review": policy_backfill_review(database, policy),
         "total_canonical_entries": len(database),
         "eligible_before": len(select_eligible_titles(database)),
         "selected": {
@@ -322,11 +383,16 @@ def build_dry_run_report(database, selected_titles, limit, recent_days):
     }
 
 
-def build_apply_report(database, eligible_before, selected_titles, limit, results, recent_days=RECENT_DEATH_WINDOW_DAYS):
+def build_apply_report(
+    database, eligible_before, selected_titles, limit, results,
+    recent_policy=None,
+):
+    policy = recent_policy or _default_recent_policy()
     return {
         "mode": "apply",
         "operation": "recent-death-discovery-prepare",
-        "recent_window_days": recent_days,
+        "recent_window": policy,
+        "policy_backfill_review": policy_backfill_review(database, policy),
         "total_canonical_entries": len(database),
         "eligible_before": eligible_before,
         "selected": {"count": len(selected_titles), "limit": limit},
@@ -393,6 +459,11 @@ def add_report_timing(report, started_at, finished_at):
 def main(argv=None):
     started_at = time.time()
     args = parse_args(argv)
+    run_date = date.today()
+    policy = recent_death_policy(
+        run_date, years=args.recent_years, days=args.recent_days,
+        default_years=RECENT_DEATH_WINDOW_YEARS,
+    )
     database = load_database(DATABASE_FILE, args.data_folder)
     eligible_titles = select_eligible_titles(database)
     try:
@@ -405,7 +476,9 @@ def main(argv=None):
         if unresolved:
             report = {
                 "mode": "apply", "operation": "recent-death-discovery-prepare",
-                "recent_window_days": args.recent_days, "blocked": True,
+                "recent_window": policy,
+                "policy_backfill_review": policy_backfill_review(database, policy),
+                "blocked": True,
                 "blocked_notifications": [{"title": title, "notification_id": event.get("notification_id"), "state": event.get("state")} for title, event in unresolved],
                 "backup": backup_result,
             }
@@ -418,12 +491,27 @@ def main(argv=None):
         backup = create_database_backup(args.data_folder, DATABASE_BACKUP_FOLDER, "before-recent-death-check", OPERATIONAL_BACKUP_RETENTION_DAYS, preserve=False, kind="operational", persistence_lock=persistence_lock, filename=DATABASE_FILE)
         backup_result = backup.as_report(True, OPERATIONAL_BACKUP_RETENTION_DAYS)
         if not backup.created:
-            print(json.dumps({"mode": "apply", "backup": backup_result, "error": "Database backup failed; no canonical mutation was attempted."}, indent=2, ensure_ascii=False))
+            print(json.dumps({
+                "mode": "apply",
+                "operation": "recent-death-discovery-prepare",
+                "recent_window": policy,
+                "policy_backfill_review": policy_backfill_review(database, policy),
+                "backup": backup_result,
+                "error": "Database backup failed; no canonical mutation was attempted.",
+            }, indent=2, ensure_ascii=False))
             return 1
-        results = run_apply(database, selected_titles, args.data_folder, recent_days=args.recent_days)
-        report = build_apply_report(database, len(eligible_titles), selected_titles, args.limit, results, args.recent_days)
+        results = run_apply(
+            database, selected_titles, args.data_folder, today=run_date,
+            recent_policy=policy,
+        )
+        report = build_apply_report(
+            database, len(eligible_titles), selected_titles, args.limit, results,
+            policy,
+        )
     else:
-        report = build_dry_run_report(database, selected_titles, args.limit, args.recent_days)
+        report = build_dry_run_report(
+            database, selected_titles, args.limit, policy,
+        )
     report["backup"] = backup_result
     recent_updates = report.get("recent_death_updates", {})
     report["new_notification_ids"] = [

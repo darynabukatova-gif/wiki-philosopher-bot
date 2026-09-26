@@ -1,13 +1,16 @@
 import copy
 import json
-from datetime import date
+from datetime import date, datetime, timezone
 
 import pytest
 
 import wiki_philosopher_bot.cli.check_recent_deaths as check_recent_deaths
 import wiki_philosopher_bot.wikipedia_api as wikipedia_api
 import wiki_philosopher_bot.recent_death_outbox as recent_death_outbox
-from wiki_philosopher_bot.database_schema import make_empty_database_entry, serialize_database_entries
+from wiki_philosopher_bot.database_schema import (
+    make_empty_database_entry, make_pending_recent_death_notification,
+    serialize_database_entries, transition_recent_death_notification,
+)
 from wiki_philosopher_bot.telegram_bot import TelegramResult
 
 
@@ -334,3 +337,127 @@ def test_prepare_report_exposes_only_newly_created_notification_ids(tmp_path):
     destination = tmp_path / "result.json"
     check_recent_deaths.write_result_json(report, destination)
     assert json.loads(destination.read_text(encoding="utf-8"))["new_notification_ids"] == ["new-id"]
+
+
+
+def test_recent_window_cli_overrides_are_positive_and_mutually_exclusive():
+    assert check_recent_deaths.parse_args(["--recent-years", "3"]).recent_years == 3
+    assert check_recent_deaths.parse_args(["--recent-days", "30"]).recent_days == 30
+    for arguments in (["--recent-years", "0"], ["--recent-days", "-1"],
+                      ["--recent-years", "7", "--recent-days", "30"]):
+        with pytest.raises(SystemExit):
+            check_recent_deaths.parse_args(arguments)
+
+
+def test_default_report_uses_structured_seven_calendar_year_policy():
+    policy = check_recent_deaths.recent_death_policy(
+        date(2026, 9, 26),
+        default_years=check_recent_deaths.RECENT_DEATH_WINDOW_YEARS,
+    )
+    report = check_recent_deaths.build_dry_run_report({}, [], None, policy)
+    assert report["recent_window"] == {
+        "kind": "calendar-years",
+        "value": 7,
+        "run_date": "2026-09-26",
+        "inclusive_from": "2019-09-26",
+        "inclusive_to": "2026-09-26",
+        "leap_day_policy": "clamp-to-last-day-of-month",
+    }
+
+
+def test_new_death_calendar_boundaries_control_notification_creation(monkeypatch, tmp_path):
+    entries = [monitored_entry("Lower", qid="Q1"), monitored_entry("Before", qid="Q2")]
+    database = {entry["title"]: entry for entry in entries}
+    write_database(tmp_path, entries)
+    monkeypatch.setattr(
+        check_recent_deaths, "get_wikidata_entities_batch",
+        lambda *args, **kwargs: wikipedia_api.BatchLookupResult({
+            "Q1": entity_with_death(time_claim("+2019-09-26T00:00:00Z")),
+            "Q2": entity_with_death(time_claim("+2019-09-25T00:00:00Z")),
+        }, None),
+    )
+    results = check_recent_deaths.run_apply(
+        database, ["Lower", "Before"], str(tmp_path), limiter=object(),
+        today=date(2026, 9, 26),
+    )
+    assert database["Lower"]["recent_death_notifications"][0]["state"] == "pending"
+    assert "recent_death_notifications" not in database["Before"]
+    assert results["pending_notifications"] == 1
+    assert results["historical_deaths"] == 1
+
+
+def test_known_year_receiving_exact_date_never_creates_event_and_is_review_only(monkeypatch, tmp_path):
+    entry = monitored_entry("Known", death_year=2025)
+    database = {"Known": entry}
+    write_database(tmp_path, [entry])
+    monkeypatch.setattr(
+        check_recent_deaths, "get_wikidata_entities_batch",
+        lambda *args, **kwargs: wikipedia_api.BatchLookupResult({
+            "Q1": entity_with_death(time_claim("+2025-09-01T00:00:00Z")),
+        }, None),
+    )
+    results = check_recent_deaths.run_apply(
+        database, ["Known"], str(tmp_path), limiter=object(),
+        today=date(2026, 9, 26),
+    )
+    assert database["Known"]["wikidata"]["death_date"] == "2025-09-01"
+    assert "recent_death_notifications" not in database["Known"]
+    assert results["historical_deaths"] == 1
+    policy = check_recent_deaths.recent_death_policy(date(2026, 9, 26), years=7)
+    assert check_recent_deaths.policy_backfill_review(database, policy) == {
+        "count": 1,
+        "records": [{
+            "title": "Known", "death_date": "2025-09-01",
+            "reason": "known-before-current-policy-window",
+        }],
+    }
+
+
+def test_known_death_entering_widened_window_is_review_only():
+    entry = monitored_entry("Known", death_year=2020)
+    entry["wikidata"]["death_date"] = "2020-01-01"
+    database = {"Known": entry}
+    narrow = check_recent_deaths.recent_death_policy(date(2026, 9, 26), years=3)
+    wide = check_recent_deaths.recent_death_policy(date(2026, 9, 26), years=7)
+    assert check_recent_deaths.policy_backfill_review(database, narrow)["count"] == 0
+    assert check_recent_deaths.policy_backfill_review(database, wide)["records"][0]["title"] == "Known"
+    assert check_recent_deaths.select_eligible_titles(database) == []
+    assert "recent_death_notifications" not in entry
+
+
+def test_sent_notification_suppresses_policy_backfill_duplicate():
+    entry = monitored_entry("Sent", death_year=2026)
+    entry["wikidata"]["death_date"] = "2026-06-29"
+    pending = make_pending_recent_death_notification(
+        "Sent", "Q1", "2026-06-29", "message", notification_id="sent-id",
+        now=datetime(2026, 7, 1, tzinfo=timezone.utc),
+    )
+    entry["recent_death_notifications"] = [transition_recent_death_notification(
+        pending, "sent", telegram_message_id=10,
+        now=datetime(2026, 7, 2, tzinfo=timezone.utc),
+    )]
+    policy = check_recent_deaths.recent_death_policy(date(2026, 9, 26), years=7)
+    assert check_recent_deaths.policy_backfill_review({"Sent": entry}, policy) == {
+        "count": 0, "records": [],
+    }
+
+
+def test_unresolved_notification_still_blocks_apply_before_backup(monkeypatch, tmp_path):
+    entry = monitored_entry("Blocked", death_year=2026)
+    entry["wikidata"]["death_date"] = "2026-06-29"
+    entry["recent_death_notifications"] = [make_pending_recent_death_notification(
+        "Blocked", "Q1", "2026-06-29", "message", notification_id="pending-id",
+        now=datetime(2026, 7, 1, tzinfo=timezone.utc),
+    )]
+    monkeypatch.setattr(check_recent_deaths, "load_database", lambda *args: {"Blocked": entry})
+    monkeypatch.setattr(
+        check_recent_deaths, "create_database_backup",
+        lambda *args, **kwargs: pytest.fail("blocked apply must not create a backup"),
+    )
+    monkeypatch.setattr(
+        check_recent_deaths, "get_wikidata_entities_batch",
+        lambda *args, **kwargs: pytest.fail("blocked apply must not query Wikidata"),
+    )
+    assert check_recent_deaths.main([
+        "--data-folder", str(tmp_path), "--apply",
+    ]) == 1

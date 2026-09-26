@@ -100,13 +100,17 @@ rewrite as dispatch and never contacts Telegram.
 ## Recent-death notification outbox (Phase 1)
 
 Recent-death discovery remains Wikidata P570-only and uses the configurable
-`RECENT_DEATH_WINDOW_DAYS` (365 by default) only for a newly discovered,
-Gregorian day-precision death date. `wiki-philosopher-check-recent-deaths
+`RECENT_DEATH_WINDOW_YEARS` (seven calendar years by default) only for a newly
+discovered Gregorian day-precision death date. Calendar subtraction clamps
+leap day to the last day of February. `--recent-years N` is the preferred
+override; legacy `--recent-days N` explicitly selects a fixed-day interval. `wiki-philosopher-check-recent-deaths
 --apply` is now prepare-only: it atomically writes the death fact and an
 optional per-record `recent_death_notifications` pending event together, then
 never contacts Telegram. Old or imprecise deaths retain their canonical date
 facts but create no event. Existing records omit this optional history and
-therefore require no migration.
+therefore require no migration. Reports separately classify known exact deaths
+inside the effective interval as policy-backfill review records; this
+classification is read-only and never creates an event.
 
 Each event stores its ID, title, QID, exact death date, exact escaped Telegram
 HTML payload, SHA-256 payload fingerprint, timestamps, delivery state, and
@@ -131,8 +135,9 @@ normal philosopher-post workflow because both update the same private
 using `DATA_REPOSITORY` and `DATA_REPO_TOKEN`, copies only `database.jsonl`,
 and commits only that file as `github-actions[bot]`.
 
-Prepare accepts optional exact `title` and `recent_days` inputs through quoted
-environment variables. It writes an invocation-specific JSON result containing
+Prepare accepts optional exact `title` and legacy fixed-day `recent_days`
+inputs through quoted environment variables; blank uses the configured
+seven-calendar-year default. It writes an invocation-specific JSON result containing
 only `new_notification_ids`; the workflow never scans all pending events or
 selects the newest event. If data changed, it pushes the prepared checkpoint
 before dispatch. Telegram credentials are scoped solely to the dispatch step.

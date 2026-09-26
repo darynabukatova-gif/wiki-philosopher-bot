@@ -3,12 +3,12 @@
 import argparse
 import json
 import time
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 from wiki_philosopher_bot.cache import DatabaseBackupResult, create_database_backup, load_database, update_database_entry
 from wiki_philosopher_bot.config import (
-    RECENT_DEATH_WINDOW_DAYS,
+    RECENT_DEATH_WINDOW_YEARS,
     CANONICAL_DATA_FOLDER,
     DATABASE_FILE,
     RATE_LIMIT,
@@ -17,6 +17,9 @@ from wiki_philosopher_bot.config import (
     OPERATIONAL_BACKUP_RETENTION_DAYS,
 )
 from wiki_philosopher_bot.run_reporting import save_wikidata_date_refresh_report
+from wiki_philosopher_bot.date_policy import (
+    date_is_within_recent_policy, recent_death_policy,
+)
 from wiki_philosopher_bot.runtime import persistence_lock
 from wiki_philosopher_bot.utils import RateLimiter, chunk_list
 from wiki_philosopher_bot.wikipedia_api import (
@@ -227,20 +230,28 @@ def detect_recent_death_update(
     new_death_date,
     *,
     today,
-    recent_days=RECENT_DEATH_WINDOW_DAYS,
+    recent_policy=None,
+    recent_years=None,
+    recent_days=None,
 ):
-    """Whether a fresh exact death date is newly established and recent."""
+    """Whether a death fact is newly established, exact, and policy-recent.
+
+    A record with either a previously known death year or exact death date is
+    deliberately ineligible. Widening policy therefore cannot manufacture a
+    notification backlog, and later precision enrichment is review-only.
+    """
     if not isinstance(today, date) or isinstance(today, datetime):
         raise TypeError("today must be a date")
-    if new_death_date == old_death_date or not isinstance(new_death_date, str):
+    if old_death_year is not None or old_death_date is not None:
         return False
-    try:
-        parsed_date = date.fromisoformat(new_death_date)
-    except ValueError:
+    if not isinstance(new_death_date, str):
         return False
-    if parsed_date > today:
-        return False
-    return today - parsed_date <= timedelta(days=recent_days)
+    if recent_policy is None:
+        recent_policy = recent_death_policy(
+            today, years=recent_years, days=recent_days,
+            default_years=RECENT_DEATH_WINDOW_YEARS,
+        )
+    return date_is_within_recent_policy(new_death_date, recent_policy)
 
 
 def _title_result(
@@ -280,7 +291,7 @@ def _record_failure(
 
 def _apply_successful_dates(
     results, title, old_birth, old_death, old_death_date, new_birth,
-    new_death, new_death_date, today,
+    new_death, new_death_date, today, recent_policy,
 ):
     results["successfully_refreshed"] += 1
     detail = _title_result(
@@ -302,6 +313,7 @@ def _apply_successful_dates(
         results["death_sign_corrections"] += 1
     if detect_recent_death_update(
         old_death, old_death_date, new_death, new_death_date, today=today,
+        recent_policy=recent_policy,
     ):
         results["recent_death_updates"].append({
             "title": title,
@@ -313,12 +325,19 @@ def _apply_successful_dates(
         })
 
 
-def run_apply(database, selected_titles, data_folder, limiter=None, today=None):
+def run_apply(
+    database, selected_titles, data_folder, limiter=None, today=None,
+    recent_policy=None,
+):
     """Fetch selected entity claims in batches and persist date-only changes."""
     if limiter is None:
         limiter = RateLimiter(RATE_LIMIT)
     if today is None:
         today = date.today()
+    if recent_policy is None:
+        recent_policy = recent_death_policy(
+            today, default_years=RECENT_DEATH_WINDOW_YEARS,
+        )
     results = {
         "successfully_refreshed": 0,
         "changed": 0,
@@ -405,16 +424,19 @@ def run_apply(database, selected_titles, data_folder, limiter=None, today=None):
             continue
         _apply_successful_dates(
             results, title, old_birth, old_death, old_death_date, new_birth,
-            new_death, new_death_date, today,
+            new_death, new_death_date, today, recent_policy,
         )
 
     results["remaining_retryable"] = results["operational_failures"]
     return results
 
 
-def build_apply_report(database, eligible_before, selected_titles, limit, results):
+def build_apply_report(
+    database, eligible_before, selected_titles, limit, results, recent_policy=None,
+):
     return {
         "mode": "apply",
+        "recent_window": recent_policy,
         "total_canonical_entries": len(database),
         "eligible_before": eligible_before,
         "selected": {"count": len(selected_titles), "limit": limit},
@@ -472,9 +494,17 @@ def main(argv=None):
                 "error": "Database backup failed; no canonical mutation was attempted."},
                 indent=2, ensure_ascii=False, sort_keys=False))
             return 1
-        results = run_apply(database, selected_titles, args.data_folder)
+        run_date = date.today()
+        policy = recent_death_policy(
+            run_date, default_years=RECENT_DEATH_WINDOW_YEARS,
+        )
+        results = run_apply(
+            database, selected_titles, args.data_folder, today=run_date,
+            recent_policy=policy,
+        )
         report = build_apply_report(
-            database, len(eligible_titles), selected_titles, args.limit, results
+            database, len(eligible_titles), selected_titles, args.limit, results,
+            policy,
         )
     else:
         report = build_dry_run_report(database, selected_titles, args.limit)
