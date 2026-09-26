@@ -80,6 +80,7 @@ QUOTE_REFRESH_REPORT_FOLDER = "reports/quote-refresh"
 WIKIDATA_DATE_REFRESH_REPORT_FOLDER = "reports/wikidata-date-refresh"
 PURGE_REPORT_FOLDER = "reports/purge"
 RECENT_DEATH_REPORT_FOLDER = "reports/recent-deaths"
+DEATH_REPORT_FOLDER = "reports/deaths"
 EXTERNAL_LINK_REPORT_FOLDER = "reports/external-links"
 LOCAL_DATA_SYNC_REPORT_FOLDER = "reports/local-data-sync"
 

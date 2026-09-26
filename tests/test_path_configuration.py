@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 
 import wiki_philosopher_bot.cache as cache
 import wiki_philosopher_bot.cli.check_recent_deaths as check_recent_deaths
+import wiki_philosopher_bot.cli.death_report as death_report
 import wiki_philosopher_bot.config as config
 import wiki_philosopher_bot.main as main
 import wiki_philosopher_bot.migration as migration
@@ -33,6 +34,9 @@ def test_repository_storage_paths_are_separated_and_used_by_callers():
     )
     assert check_recent_deaths.RECENT_DEATH_REPORTS_DIRECTORY == Path(
         config.RECENT_DEATH_REPORT_FOLDER
+    )
+    assert death_report.DEATH_REPORTS_DIRECTORY == Path(
+        config.DEATH_REPORT_FOLDER
     )
     assert migration.read_legacy_sources.__defaults__ == (
         config.LEGACY_DATA_FOLDER,

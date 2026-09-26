@@ -356,6 +356,25 @@ def save_recent_death_report(
     )
 
 
+def save_historical_death_report(
+    report,
+    report_directory,
+    started_at,
+    retention_days=DEFAULT_RETENTION_DAYS,
+    now=None,
+):
+    """Atomically save one read-only historical death report."""
+    return save_json_report(
+        report,
+        report_directory,
+        started_at,
+        retention_days=retention_days,
+        now=now,
+        report_kind="historical-death",
+        temporary_prefix=".historical-death-report-",
+    )
+
+
 def format_run_summary(report, report_path=None, diagnostics=None):
     entries = report["entries"]
     evaluated = report["newly_evaluated"]

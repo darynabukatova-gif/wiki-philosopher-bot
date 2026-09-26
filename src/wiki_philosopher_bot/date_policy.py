@@ -19,13 +19,39 @@ def _calendar_date(value, name):
     return value
 
 
+def calendar_anniversary(value, year):
+    """Return ``value``'s anniversary in ``year``, clamped at month end."""
+    value = _calendar_date(value, "value")
+    if (
+        not isinstance(year, int)
+        or isinstance(year, bool)
+        or not 1 <= year <= 9999
+    ):
+        raise ValueError("year must be an integer from 1 through 9999")
+    target_day = min(
+        value.day,
+        calendar.monthrange(year, value.month)[1],
+    )
+    return date(year, value.month, target_day)
+
+
+def completed_calendar_years(start, end):
+    """Return completed clamped calendar anniversaries from start through end."""
+    start = _calendar_date(start, "start")
+    end = _calendar_date(end, "end")
+    if start > end:
+        raise ValueError("start must not be after end")
+    years = end.year - start.year
+    if end < calendar_anniversary(start, end.year):
+        years -= 1
+    return years
+
+
 def calendar_date_years_ago(run_date, years):
     """Return ``years`` before ``run_date``, clamping invalid month-end days."""
     run_date = _calendar_date(run_date, "run_date")
     years = _positive_integer(years, "years")
-    target_year = run_date.year - years
-    target_day = min(run_date.day, calendar.monthrange(target_year, run_date.month)[1])
-    return date(target_year, run_date.month, target_day)
+    return calendar_anniversary(run_date, run_date.year - years)
 
 
 def recent_death_interval(run_date, years):

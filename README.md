@@ -212,6 +212,23 @@ The installed console commands are:
   wiki-philosopher-enrich-external-links \
     --apply-project-gutenberg-report reports/external-links/REVIEWED.json
   ```
+- `wiki-philosopher-death-report`
+
+  Build a read-only historical report from exact dates already stored in the
+  canonical database. Explicit intervals and calendar-year intervals are
+  inclusive:
+
+  ```bash
+  wiki-philosopher-death-report --from 2019-09-26 --to 2026-09-26
+  wiki-philosopher-death-report --last-years 7 --to 2026-09-26
+  ```
+
+  The command writes JSON under `reports/deaths/` by default; use `--json PATH`
+  for an exact output path. Exact `death_date` values form the confirmed rows.
+  Year-only values are reported separately as potential overlaps and are never
+  converted into invented dates or ages. The command performs no network,
+  backup, canonical mutation, notification, or posting operation.
+
 - `wiki-philosopher-check-recent-deaths`
 
   Recent-death discovery is a durable prepare step: `--apply` can query

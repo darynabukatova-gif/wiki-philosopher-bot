@@ -4,7 +4,9 @@ import pytest
 
 from wiki_philosopher_bot.date_policy import (
     LEAP_DAY_POLICY,
+    calendar_anniversary,
     calendar_date_years_ago,
+    completed_calendar_years,
     date_is_within_interval,
     date_is_within_recent_policy,
     recent_death_interval,
@@ -56,3 +58,11 @@ def test_policy_overrides_require_positive_integers(kwargs):
 def test_policy_rejects_simultaneous_year_and_day_overrides():
     with pytest.raises(ValueError, match="mutually exclusive"):
         recent_death_policy(date(2026, 9, 26), years=7, days=30)
+
+
+
+def test_calendar_anniversary_and_completed_years_share_leap_day_clamping():
+    birth = date(2000, 2, 29)
+    assert calendar_anniversary(birth, 2021) == date(2021, 2, 28)
+    assert completed_calendar_years(birth, date(2021, 2, 27)) == 20
+    assert completed_calendar_years(birth, date(2021, 2, 28)) == 21

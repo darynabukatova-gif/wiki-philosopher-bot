@@ -97,6 +97,17 @@ unknown may be cancelled only with explicit unsafe confirmation. No ambiguous
 attempt is automatically resent. Reconciliation uses the same atomic canonical
 rewrite as dispatch and never contacts Telegram.
 
+## Historical philosopher death reports
+
+`wiki-philosopher-death-report` is a canonical-data-only, read-only reporting
+command. It accepts either an explicit inclusive `--from`/`--to` interval or a
+calendar-based `--last-years N` interval, optionally ending at a reproducible
+`--to` date. Only exact stored `wikidata.death_date` values are confirmed
+interval deaths. Year-only records whose year overlaps the interval are kept
+separate, and neither dates nor ages are inferred from year-only data. JSON is
+saved under `reports/deaths/` by default. No Wikidata refresh, backup, outbox,
+Telegram call, or canonical rewrite occurs.
+
 ## Recent-death notification outbox (Phase 1)
 
 Recent-death discovery remains Wikidata P570-only and uses the configurable
