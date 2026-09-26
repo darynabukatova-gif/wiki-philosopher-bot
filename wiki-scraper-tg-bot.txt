@@ -157,6 +157,27 @@ next ID, and a failed/unknown terminal state stops the run. A terminal push
 failure is fatal and explicitly requires reconciliation rather than a rerun.
 No-change and historical/imprecise fact-only runs never dispatch Telegram.
 
+## Manual historical death-report deployment (Phase 6)
+
+`.github/workflows/manual-death-report-post.yml` is manual-only and shares the
+`wiki-philosopher-authoritative-data` non-cancelling concurrency group with the
+other private-data workflows. It validates `last_years`, optional `to_date`,
+`rows_per_page`, and explicit `confirm_send` before report-post preparation.
+It reads the private repository's `database.jsonl` only to create a read-only
+report and temporary rendered assets. The durable state root is instead the
+private checkout's `report-posts/` directory; `database.jsonl` is explicitly
+forbidden from staging.
+
+The workflow prepares one frozen bundle, commits and pushes exactly that bundle
+before its one explicit dispatch invocation, and commits/pushes only that
+attempt's changed `attempt.json` afterward. `REPORT_TELEGRAM_CHAT_ID` is the
+dedicated report destination and is scoped with `TELEGRAM_TOKEN` to dispatch
+only. Failed/unknown terminal outcomes are checkpointed and fail the workflow;
+a terminal-push failure warns not to rerun and requires manual report-post
+reconciliation. Diagnostic result JSON files may be retained briefly as
+non-secret artifacts; source reports and PNGs are not uploaded as public
+artifacts. No schedule is configured.
+
 ## Current persistence, configuration, and HTTP safety
 
 Normal domain writes use `cache.update_database_entry()`. Network/API work is

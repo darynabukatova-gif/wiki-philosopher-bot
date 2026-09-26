@@ -32,6 +32,17 @@ def get_telegram_media_group_settings():
     )
     return telegram_url, chat_id
 
+def get_report_telegram_media_group_settings():
+    """Return the explicitly configured destination for report media groups."""
+    token = os.getenv("TELEGRAM_TOKEN")
+    chat_id = os.getenv("REPORT_TELEGRAM_CHAT_ID")
+    telegram_url = (
+        "https://api.telegram.org/bot{}/sendMediaGroup".format(token)
+        if token else None
+    )
+    return telegram_url, chat_id
+
+
 def get_recent_death_telegram_settings():
     """Return the explicitly configured private destination for death alerts."""
     token = os.getenv("TELEGRAM_TOKEN")

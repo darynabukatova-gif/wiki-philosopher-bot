@@ -49,3 +49,16 @@ def test_wikimedia_user_agent_uses_optional_environment_contact(monkeypatch):
     assert config.get_wikimedia_user_agent() == (
         "WikiScraperBot/3.0 (project.example/contact)"
     )
+
+
+def test_report_media_group_settings_use_only_the_dedicated_report_chat(monkeypatch):
+    import wiki_philosopher_bot.config as config
+
+    monkeypatch.setenv("TELEGRAM_TOKEN", "token-value")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "normal-post-chat")
+    monkeypatch.setenv("REPORT_TELEGRAM_CHAT_ID", "report-post-chat")
+
+    url, chat_id = config.get_report_telegram_media_group_settings()
+
+    assert url == "https://api.telegram.org/bottoken-value/sendMediaGroup"
+    assert chat_id == "report-post-chat"

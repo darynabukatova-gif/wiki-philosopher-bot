@@ -155,6 +155,29 @@ fact updates are checkpointed without a Telegram notification. `pending`,
 rerun a workflow after an ambiguous failure. Daily scheduling is intentionally
 not enabled until supervised production validation is complete.
 
+### Manual historical death-report posting
+
+Historical statistical posts are also **manual-only**: open **Actions → Manual
+philosopher death report → Run workflow**. Choose a positive calendar-year
+window (`last_years`, default `7`), optionally supply an inclusive `to_date`,
+choose `rows_per_page`, and explicitly enable `confirm_send`. Without that
+confirmation the workflow fails before it creates a report-post attempt.
+
+The workflow reads `database.jsonl` from the private authoritative repository,
+generates a read-only report and PNG assets in runner-temporary storage, then
+freezes the exact report, manifest, caption, and media in
+`report-posts/<attempt-id>/` in the private repository. It pushes that pending
+bundle before the single Telegram media-group dispatch. It then pushes the
+terminal `sent`, `failed`, or `unknown` state. It requires `DATA_REPOSITORY`,
+`DATA_REPO_TOKEN`, `TELEGRAM_TOKEN`, and the dedicated
+`REPORT_TELEGRAM_CHAT_ID`; it does not use the normal-post or recent-death chat
+identifier.
+
+If the workflow ends after Telegram may have been contacted but before its
+terminal checkpoint reaches the private repository, **do not rerun it**.
+Inspect and reconcile the exact report-post attempt first. No schedule is
+configured for this workflow.
+
 ### Posting-attempt reconciliation
 
 Posting attempts are deliberately never resent automatically after an

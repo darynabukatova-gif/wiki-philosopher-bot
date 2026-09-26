@@ -1,0 +1,344 @@
+name: Manual philosopher death report
+
+on:
+  workflow_dispatch:
+    inputs:
+      last_years:
+        description: 'Calendar-year reporting window'
+        required: true
+        default: '7'
+        type: string
+      to_date:
+        description: 'Optional inclusive end date YYYY-MM-DD; blank uses the run date'
+        required: false
+        default: ''
+        type: string
+      rows_per_page:
+        description: 'Table rows per PNG page'
+        required: true
+        default: '22'
+        type: string
+      confirm_send:
+        description: 'Explicitly confirm that this run may send one Telegram media group'
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wiki-philosopher-authoritative-data
+  cancel-in-progress: false
+
+jobs:
+  post-report:
+    name: Report, freeze, checkpoint, and dispatch one death-report post
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source repository
+        uses: actions/checkout@v7
+
+      - name: Validate explicit manual inputs before any report-post mutation
+        env:
+          LAST_YEARS: ${{ inputs.last_years }}
+          TO_DATE: ${{ inputs.to_date }}
+          ROWS_PER_PAGE: ${{ inputs.rows_per_page }}
+          CONFIRM_SEND: ${{ inputs.confirm_send }}
+        run: |
+          set -euo pipefail
+          if [[ "${CONFIRM_SEND}" != "true" ]]; then
+            echo "::error::confirm_send must be explicitly enabled before a pending report-post attempt can be created."
+            exit 1
+          fi
+          LAST_YEARS="${LAST_YEARS}" TO_DATE="${TO_DATE}" ROWS_PER_PAGE="${ROWS_PER_PAGE}" python - <<'PY'
+          import os
+          from datetime import date
+
+          for name in ("LAST_YEARS", "ROWS_PER_PAGE"):
+              try:
+                  value = int(os.environ[name])
+              except ValueError as error:
+                  raise SystemExit("{} must be a positive integer.".format(name)) from error
+              if value <= 0:
+                  raise SystemExit("{} must be a positive integer.".format(name))
+          if os.environ["TO_DATE"]:
+              try:
+                  date.fromisoformat(os.environ["TO_DATE"])
+              except ValueError as error:
+                  raise SystemExit("TO_DATE must be a valid YYYY-MM-DD date.") from error
+          PY
+
+      - name: Require private data repository configuration
+        env:
+          DATA_REPOSITORY: ${{ vars.DATA_REPOSITORY }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${DATA_REPOSITORY}" ]]; then
+            echo "::error::Set the DATA_REPOSITORY repository variable to owner/private-data-repository."
+            exit 1
+          fi
+          if [[ ! "${DATA_REPOSITORY}" =~ ^[^/[:space:]]+/[^/[:space:]]+$ ]]; then
+            echo "::error::DATA_REPOSITORY must have the form owner/private-data-repository."
+            exit 1
+          fi
+
+      - name: Check out authoritative private data repository
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ vars.DATA_REPOSITORY }}
+          token: ${{ secrets.DATA_REPO_TOKEN }}
+          path: private-data
+          fetch-depth: 1
+          persist-credentials: true
+
+      - name: Verify authoritative private checkout is clean and current
+        run: |
+          set -euo pipefail
+          if [[ -n "$(git -C private-data status --porcelain --untracked-files=all)" ]]; then
+            echo "::error::Private data checkout is unexpectedly dirty."
+            exit 1
+          fi
+          git -C private-data fetch origin main
+          if [[ "$(git -C private-data rev-parse HEAD)" != "$(git -C private-data rev-parse origin/main)" ]]; then
+            echo "::error::Private data checkout is not exactly current with origin/main."
+            exit 1
+          fi
+
+      - name: Configure private data-repository commit identity
+        run: |
+          set -euo pipefail
+          git -C private-data config user.name "github-actions[bot]"
+          git -C private-data config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Install authoritative database for read-only reporting
+        run: |
+          set -euo pipefail
+          test -f private-data/database.jsonl
+          test ! -L private-data/database.jsonl
+          mkdir -p data
+          cp -- private-data/database.jsonl data/database.jsonl
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+
+      - name: Install application
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install .
+
+      - id: report
+        name: Generate read-only historical death report from authoritative data
+        env:
+          LAST_YEARS: ${{ inputs.last_years }}
+          TO_DATE: ${{ inputs.to_date }}
+        run: |
+          set -euo pipefail
+          report_path="${RUNNER_TEMP}/historical-death-report.json"
+          report_args=(--last-years "${LAST_YEARS}" --data-folder data --json "${report_path}")
+          if [[ -n "${TO_DATE}" ]]; then
+            report_args+=(--to "${TO_DATE}")
+          fi
+          wiki-philosopher-death-report "${report_args[@]}"
+          test -s "${report_path}"
+          REPORT_PATH="${report_path}" python - <<'PY'
+          import json
+          import os
+          with open(os.environ["REPORT_PATH"], encoding="utf-8") as handle:
+              report = json.load(handle)
+          if report.get("operation") != "historical-death-report" or report.get("mode") != "read-only":
+              raise SystemExit("Historical report did not have the expected read-only format.")
+          PY
+          echo "report_path=${report_path}" >> "${GITHUB_OUTPUT}"
+
+      - id: render
+        name: Render report PNG assets into runner temporary storage
+        env:
+          REPORT_PATH: ${{ steps.report.outputs.report_path }}
+          ROWS_PER_PAGE: ${{ inputs.rows_per_page }}
+        run: |
+          set -euo pipefail
+          assets_dir="${RUNNER_TEMP}/death-report-assets"
+          wiki-philosopher-render-death-report "${REPORT_PATH}" --output-dir "${assets_dir}" --rows-per-page "${ROWS_PER_PAGE}"
+          test -f "${assets_dir}/render-manifest.json"
+          MANIFEST_PATH="${assets_dir}/render-manifest.json" python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          manifest_path = Path(os.environ["MANIFEST_PATH"])
+          manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+          if manifest.get("operation") != "historical-death-report-render":
+              raise SystemExit("Unexpected render manifest operation.")
+          assets = manifest.get("assets")
+          if not isinstance(assets, list) or not assets:
+              raise SystemExit("Render manifest has no assets.")
+          if any(not isinstance(item, dict) or not (manifest_path.parent / item.get("filename", "")).is_file() for item in assets):
+              raise SystemExit("Render manifest references a missing PNG asset.")
+          PY
+          echo "assets_dir=${assets_dir}" >> "${GITHUB_OUTPUT}"
+          echo "manifest_path=${assets_dir}/render-manifest.json" >> "${GITHUB_OUTPUT}"
+
+      - id: prepare
+        name: Freeze one pending report-post bundle without Telegram
+        env:
+          REPORT_PATH: ${{ steps.report.outputs.report_path }}
+          MANIFEST_PATH: ${{ steps.render.outputs.manifest_path }}
+          REPORT_POST_STATE_ROOT: ${{ github.workspace }}/private-data/report-posts
+        run: |
+          set -euo pipefail
+          result_path="${RUNNER_TEMP}/death-report-post-prepare.json"
+          wiki-philosopher-prepare-report-post --report "${REPORT_PATH}" --manifest "${MANIFEST_PATH}" --state-root "${REPORT_POST_STATE_ROOT}" --result-json "${result_path}"
+          RESULT_PATH="${result_path}" STATE_ROOT="${REPORT_POST_STATE_ROOT}" python - <<'PY' >> "${GITHUB_OUTPUT}"
+          import json
+          import os
+          from pathlib import Path
+
+          with open(os.environ["RESULT_PATH"], encoding="utf-8") as handle:
+              result = json.load(handle)
+          attempt_id = result.get("attempt_id")
+          if result.get("ok") is not True or result.get("operation") != "prepare" or result.get("ending_state") != "pending":
+              raise SystemExit("Prepare did not create one pending report-post attempt.")
+          if not isinstance(attempt_id, str) or not attempt_id:
+              raise SystemExit("Prepare result did not contain an attempt ID.")
+          attempt_path = Path(os.environ["STATE_ROOT"]) / attempt_id / "attempt.json"
+          attempt = json.loads(attempt_path.read_text(encoding="utf-8"))
+          if attempt.get("kind") != "historical-death-report" or attempt.get("state") != "pending":
+              raise SystemExit("Prepared bundle is not a pending historical-death-report attempt.")
+          print("attempt_id={}".format(attempt_id))
+          print("attempt_bundle=report-posts/{}".format(attempt_id))
+          PY
+
+      - name: Record prepared report-post attempt
+        env:
+          ATTEMPT_ID: ${{ steps.prepare.outputs.attempt_id }}
+        run: |
+          set -euo pipefail
+          echo "Prepared report-post attempt ${ATTEMPT_ID}"
+          {
+            echo "## Historical death report post"
+            echo
+            echo "Prepared attempt: `${ATTEMPT_ID}`"
+            echo "Pending bundle must be pushed before Telegram dispatch."
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - id: pending_checkpoint
+        name: Commit and push pending report-post bundle before Telegram
+        env:
+          ATTEMPT_ID: ${{ steps.prepare.outputs.attempt_id }}
+          ATTEMPT_BUNDLE: ${{ steps.prepare.outputs.attempt_bundle }}
+        run: |
+          set -euo pipefail
+          git -C private-data add -f -- "${ATTEMPT_BUNDLE}"
+          if git -C private-data diff --cached --name-only | grep -Fx "database.jsonl"; then
+            echo "::error::database.jsonl must never be staged by this workflow."
+            exit 1
+          fi
+          staged_files="$(git -C private-data diff --cached --name-only)"
+          if [[ -z "${staged_files}" ]]; then
+            echo "::error::Prepare produced no report-post bundle checkpoint; dispatch is forbidden."
+            exit 1
+          fi
+          while IFS= read -r staged_file; do
+            case "${staged_file}" in
+              "${ATTEMPT_BUNDLE}"/*) ;;
+              *) echo "::error::Refusing to commit unrelated private-data file: ${staged_file}"; exit 1 ;;
+            esac
+          done <<< "${staged_files}"
+          git -C private-data commit -m "Prepare death report post ${ATTEMPT_ID}"
+          git -C private-data push origin HEAD
+          if [[ -n "$(git -C private-data status --porcelain --untracked-files=all)" ]]; then
+            echo "::error::Private data checkout is not clean after pending checkpoint push."
+            exit 1
+          fi
+          echo "checkpointed=true" >> "${GITHUB_OUTPUT}"
+
+      - id: dispatch
+        name: Dispatch exactly the pushed report-post attempt once
+        if: ${{ steps.pending_checkpoint.outputs.checkpointed == 'true' }}
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          REPORT_TELEGRAM_CHAT_ID: ${{ secrets.REPORT_TELEGRAM_CHAT_ID }}
+          ATTEMPT_ID: ${{ steps.prepare.outputs.attempt_id }}
+          REPORT_POST_STATE_ROOT: ${{ github.workspace }}/private-data/report-posts
+        run: |
+          set -euo pipefail
+          result_path="${RUNNER_TEMP}/death-report-post-dispatch.json"
+          set +e
+          wiki-philosopher-dispatch-report-post --attempt-id "${ATTEMPT_ID}" --state-root "${REPORT_POST_STATE_ROOT}" --confirm-pending-dispatch --result-json "${result_path}"
+          dispatch_status=$?
+          set -e
+          RESULT_PATH="${result_path}" ATTEMPT_ID="${ATTEMPT_ID}" DISPATCH_STATUS="${dispatch_status}" python - <<'PY' >> "${GITHUB_OUTPUT}"
+          import json
+          import os
+          with open(os.environ["RESULT_PATH"], encoding="utf-8") as handle:
+              result = json.load(handle)
+          if result.get("operation") != "dispatch" or result.get("attempt_id") != os.environ["ATTEMPT_ID"]:
+              raise SystemExit("Dispatch result did not identify the checkpointed attempt.")
+          persisted = result.get("persistence_succeeded") is True
+          ending_state = result.get("ending_state") or ""
+          if persisted and ending_state not in ("sent", "failed", "unknown"):
+              raise SystemExit("A persisted report-post dispatch result must be terminal.")
+          print("persistence_succeeded={}".format("true" if persisted else "false"))
+          print("ending_state={}".format(ending_state))
+          print("dispatch_status={}".format(os.environ["DISPATCH_STATUS"]))
+          PY
+
+      - id: terminal_checkpoint
+        name: Commit and push terminal report-post state
+        if: ${{ always() && steps.dispatch.outputs.persistence_succeeded == 'true' }}
+        env:
+          ATTEMPT_ID: ${{ steps.prepare.outputs.attempt_id }}
+        run: |
+          set -euo pipefail
+          trap 'echo "::error::Terminal report-post checkpoint failed for ${ATTEMPT_ID}. Telegram may already have been contacted. Do not rerun; manually reconcile this attempt."; exit 1' ERR
+          attempt_path="report-posts/${ATTEMPT_ID}/attempt.json"
+          git -C private-data add -f -- "${attempt_path}"
+          if git -C private-data diff --cached --name-only | grep -Fx "database.jsonl"; then
+            echo "::error::database.jsonl must never be staged by this workflow."
+            exit 1
+          fi
+          staged_files="$(git -C private-data diff --cached --name-only)"
+          if [[ "${staged_files}" != "${attempt_path}" ]]; then
+            echo "::error::Terminal checkpoint may stage only ${attempt_path}."
+            exit 1
+          fi
+          if git -C private-data diff --cached --quiet; then
+            echo "::error::Terminal report-post state was reported durable but attempt.json did not change."
+            exit 1
+          fi
+          git -C private-data commit -m "Finalize death report post ${ATTEMPT_ID}"
+          if ! git -C private-data push origin HEAD; then
+            echo "::error::Terminal checkpoint push failed. Do not rerun dispatch; the authoritative remote may still be pending and manual report-post reconciliation is required."
+            exit 1
+          fi
+
+      - name: Fail safely when terminal state was not persisted locally
+        if: ${{ always() && steps.dispatch.outputs.persistence_succeeded != 'true' && steps.dispatch.outcome != 'skipped' }}
+        env:
+          ATTEMPT_ID: ${{ steps.prepare.outputs.attempt_id }}
+        run: |
+          echo "::error::Report-post dispatch did not persist a terminal state for ${ATTEMPT_ID}. Do not rerun; inspect and reconcile the authoritative pending attempt."
+          exit 1
+
+      - name: Fail after a checkpointed terminal non-success outcome
+        if: ${{ always() && steps.terminal_checkpoint.outcome == 'success' && steps.dispatch.outputs.dispatch_status != '0' }}
+        env:
+          ATTEMPT_ID: ${{ steps.prepare.outputs.attempt_id }}
+          ENDING_STATE: ${{ steps.dispatch.outputs.ending_state }}
+        run: |
+          echo "::error::Report-post dispatch reached checkpointed ${ENDING_STATE} state for ${ATTEMPT_ID}. Do not retry automatically; reconcile deliberately."
+          exit 1
+
+      - name: Upload non-secret report-post result diagnostics
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: death-report-post-results
+          path: |
+            ${{ runner.temp }}/death-report-post-prepare.json
+            ${{ runner.temp }}/death-report-post-dispatch.json
+          if-no-files-found: ignore
+          retention-days: 7
