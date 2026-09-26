@@ -40,6 +40,15 @@ def test_prepare_uses_explicit_machine_result_and_has_no_telegram_secrets():
     assert "RECENT_DEATH_TELEGRAM_CHAT_ID" not in prepare
 
 
+def test_required_backup_directory_is_created_before_prepare():
+    text = workflow_text()
+    directory_setup = text.index("name: Create required runtime directories")
+    prepare = text.index("name: Discover deaths and prepare durable notifications")
+
+    assert directory_setup < prepare
+    assert "mkdir -p backups/database" in text[directory_setup:prepare]
+
+
 def test_private_checkout_and_checkpoints_are_database_only_and_ordered():
     text = workflow_text()
     assert "repository: ${{ vars.DATA_REPOSITORY }}" in text

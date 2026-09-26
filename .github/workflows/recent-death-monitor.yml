@@ -75,6 +75,11 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install .
 
+      - name: Create required runtime directories
+        run: |
+          set -euo pipefail
+          mkdir -p backups/database
+
       - id: prepare
         name: Discover deaths and prepare durable notifications without Telegram
         env:
