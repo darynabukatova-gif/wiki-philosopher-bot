@@ -220,7 +220,7 @@ jobs:
           {
             echo "## Historical death report post"
             echo
-            echo "Prepared attempt: `${ATTEMPT_ID}`"
+            printf 'Prepared attempt: `%s`\n' "${ATTEMPT_ID}"
             echo "Pending bundle must be pushed before Telegram dispatch."
           } >> "${GITHUB_STEP_SUMMARY}"
 

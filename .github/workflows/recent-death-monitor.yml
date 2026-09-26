@@ -11,6 +11,9 @@ on:
         description: 'Optional exact canonical title (leave blank for normal scan)'
         required: false
         type: string
+  schedule:
+    - cron: '41 12 * * *'
+      timezone: 'Europe/Dublin'
 
 permissions:
   contents: read
@@ -83,8 +86,8 @@ jobs:
       - id: prepare
         name: Discover deaths and prepare durable notifications without Telegram
         env:
-          REQUESTED_TITLE: ${{ inputs.title }}
-          REQUESTED_RECENT_DAYS: ${{ inputs.recent_days }}
+          REQUESTED_TITLE: ${{ github.event_name == 'workflow_dispatch' && inputs.title || '' }}
+          REQUESTED_RECENT_DAYS: ${{ github.event_name == 'workflow_dispatch' && inputs.recent_days || '' }}
         run: |
           set -euo pipefail
           result_path="${RUNNER_TEMP}/recent-death-prepare.json"

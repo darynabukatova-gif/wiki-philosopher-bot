@@ -10,21 +10,25 @@ def workflow_text():
     return WORKFLOW_PATH.read_text(encoding="utf-8")
 
 
-def test_recent_death_workflow_is_manual_only_and_shares_authoritative_data_lock():
+def test_recent_death_workflow_keeps_manual_trigger_and_daily_dublin_schedule():
     text = workflow_text()
     assert "on:\n  workflow_dispatch:" in text
-    assert "schedule:" not in text
+    assert "schedule:\n    - cron: '41 12 * * *'\n      timezone: 'Europe/Dublin'" in text
+    assert text.count("  schedule:") == 1
     assert "group: wiki-philosopher-authoritative-data" in text
     assert "cancel-in-progress: false" in text
     assert "group: wiki-philosopher-authoritative-data" in POST_WORKFLOW_PATH.read_text(encoding="utf-8")
+    assert "cron: '19 06 * * *'" in POST_WORKFLOW_PATH.read_text(encoding="utf-8")
 
 
 def test_manual_inputs_are_optional_and_safely_passed_as_environment_values():
     text = workflow_text()
     assert "recent_days:" in text and "required: false" in text
     assert "title:" in text and "Optional exact canonical title" in text
-    assert "REQUESTED_TITLE: ${{ inputs.title }}" in text
-    assert "REQUESTED_RECENT_DAYS: ${{ inputs.recent_days }}" in text
+    assert "REQUESTED_TITLE: ${{ github.event_name == 'workflow_dispatch' && inputs.title || '' }}" in text
+    assert "REQUESTED_RECENT_DAYS: ${{ github.event_name == 'workflow_dispatch' && inputs.recent_days || '' }}" in text
+    assert "REQUESTED_TITLE: ${{ inputs.title }}" not in text
+    assert "REQUESTED_RECENT_DAYS: ${{ inputs.recent_days }}" not in text
     assert 'prepare_args+=(--title "$REQUESTED_TITLE")' in text
     assert 'prepare_args+=(--recent-days "$REQUESTED_RECENT_DAYS")' in text
     assert "--title \"${{ inputs.title }}\"" not in text

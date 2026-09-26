@@ -102,6 +102,14 @@ def test_dispatch_has_dedicated_secrets_and_terminal_checkpoint_handles_all_term
     assert "Do not retry automatically; reconcile deliberately." in text
 
 
+def test_summary_renders_attempt_id_without_shell_command_substitution():
+    text = workflow_text()
+
+    assert "printf 'Prepared attempt: `%s`\\n' \"${ATTEMPT_ID}\"" in text
+    assert 'echo "Prepared attempt: `${ATTEMPT_ID}`"' not in text
+    assert "${GITHUB_STEP_SUMMARY}" in text
+
+
 def test_shared_authoritative_lock_and_non_secret_result_artifacts_are_preserved():
     text = workflow_text()
 
