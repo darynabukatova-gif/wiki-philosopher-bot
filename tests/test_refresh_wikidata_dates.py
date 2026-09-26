@@ -383,3 +383,349 @@ def test_date_refresh_report_failure_does_not_rollback_canonical_update(
 def test_date_refresh_rejects_limit_with_explicit_title():
     with pytest.raises(SystemExit):
         refresh_wikidata_dates.parse_args(["--limit", "1", "--title", "Ada"])
+
+
+
+def exact_life_entity(birth=None, death=None):
+    claims = {}
+    if birth is not None:
+        claims["P569"] = [day_death_claim(birth)]
+    if death is not None:
+        claims["P570"] = [day_death_claim(death)]
+    return {"claims": claims}
+
+
+def test_missing_exact_date_scope_is_accepted_semantic_only():
+    accepted = date_entry("Accepted", birth=1815, death=1852)
+    rejected = date_entry("Rejected", birth=1815, death=1852)
+    rejected["evaluation"]["status"] = "rejected"
+    no_stored_year = date_entry("No stored year", birth=None, death=None)
+    database = {entry["title"]: entry for entry in (
+        rejected, no_stored_year, accepted,
+    )}
+
+    assert refresh_wikidata_dates.select_missing_exact_date_titles(database) == [
+        "Accepted", "No stored year",
+    ]
+
+
+def test_exact_date_dry_run_proposes_both_without_mutation(monkeypatch, tmp_path):
+    entry = date_entry("Ada", birth=1815, death=1852)
+    database = {"Ada": entry}
+    before = copy.deepcopy(database)
+    monkeypatch.setattr(
+        refresh_wikidata_dates, "get_wikidata_entities_batch",
+        lambda *args, **kwargs: wikipedia_api.BatchLookupResult({
+            "Q1": exact_life_entity(
+                "+1815-12-10T00:00:00Z", "+1852-11-27T00:00:00Z",
+            ),
+        }, None),
+    )
+
+    results = refresh_wikidata_dates.run_exact_date_enrichment(
+        database, ["Ada"], str(tmp_path), apply=False, limiter=object(),
+    )
+
+    assert database == before
+    assert results["birth_date_proposals"] == 1
+    assert results["death_date_proposals"] == 1
+    assert results["both_date_proposals"] == 1
+    assert results["records_updated"] == 0
+    assert results["operational_failures"] == 0
+
+
+def test_exact_date_apply_enriches_existing_years_only(monkeypatch, tmp_path):
+    entry = date_entry("Ada", birth=1815, death=1852)
+    entry["recent_death_notifications"] = []
+    database = {"Ada": entry}
+    write_database(tmp_path, [entry])
+    preserved = copy.deepcopy({
+        key: entry[key] for key in entry if key != "wikidata"
+    })
+    monkeypatch.setattr(
+        refresh_wikidata_dates, "get_wikidata_entities_batch",
+        lambda *args, **kwargs: wikipedia_api.BatchLookupResult({
+            "Q1": exact_life_entity(
+                "+1815-12-10T00:00:00Z", "+1852-11-27T00:00:00Z",
+            ),
+        }, None),
+    )
+
+    results = refresh_wikidata_dates.run_exact_date_enrichment(
+        database, ["Ada"], str(tmp_path), apply=True, limiter=object(),
+    )
+
+    assert database["Ada"]["wikidata"]["birth_date"] == "1815-12-10"
+    assert database["Ada"]["wikidata"]["death_date"] == "1852-11-27"
+    assert {key: database["Ada"][key] for key in preserved} == preserved
+    assert database["Ada"]["recent_death_notifications"] == []
+    assert results["records_updated"] == 1
+
+
+def test_exact_refresh_never_erases_valid_stored_date_when_claim_is_absent(
+    monkeypatch, tmp_path,
+):
+    entry = date_entry("Ada", birth=1815, death=1852)
+    entry["wikidata"]["birth_date"] = "1815-12-10"
+    database = {"Ada": entry}
+    write_database(tmp_path, [entry])
+    monkeypatch.setattr(
+        refresh_wikidata_dates, "get_wikidata_entities_batch",
+        lambda *args, **kwargs: wikipedia_api.BatchLookupResult(
+            {"Q1": {"claims": {}}}, None,
+        ),
+    )
+
+    refresh_wikidata_dates.run_exact_date_enrichment(
+        database, ["Ada"], str(tmp_path), apply=True, limiter=object(),
+    )
+
+    assert database["Ada"]["wikidata"]["birth_date"] == "1815-12-10"
+    assert database["Ada"]["wikidata"]["death_date"] is None
+
+
+def test_differing_stored_exact_date_is_reported_as_conflict(monkeypatch, tmp_path):
+    entry = date_entry("Ada", birth=1815, death=1852)
+    entry["wikidata"]["birth_date"] = "1815-12-09"
+    database = {"Ada": entry}
+    write_database(tmp_path, [entry])
+    before = copy.deepcopy(database)
+    monkeypatch.setattr(
+        refresh_wikidata_dates, "get_wikidata_entities_batch",
+        lambda *args, **kwargs: wikipedia_api.BatchLookupResult({
+            "Q1": exact_life_entity(
+                "+1815-12-10T00:00:00Z", "+1852-11-27T00:00:00Z",
+            ),
+        }, None),
+    )
+
+    results = refresh_wikidata_dates.run_exact_date_enrichment(
+        database, ["Ada"], str(tmp_path), apply=True, limiter=object(),
+    )
+
+    assert database == before
+    assert results["conflicts_review_required"] == 1
+    assert results["records_updated"] == 0
+    assert results["proposals"] == []
+
+
+@pytest.mark.parametrize(
+    "precision,calendar,status",
+    [
+        (10, "http://www.wikidata.org/entity/Q1985727", "imprecise"),
+        (11, "http://www.wikidata.org/entity/Q1985786", "unsupported-calendar"),
+    ],
+)
+def test_exact_date_evidence_reports_unsupported_claims(
+    precision, calendar, status,
+):
+    claim = day_death_claim("+1815-12-10T00:00:00Z")
+    claim["mainsnak"]["datavalue"]["value"].update({
+        "precision": precision, "calendarmodel": calendar,
+    })
+
+    evidence, error = refresh_wikidata_dates.refreshed_life_date_evidence_from_entity({
+        "claims": {"P569": [claim]},
+    })
+
+    assert error is None
+    assert evidence["birth"]["date"] is None
+    assert evidence["birth"]["exact_date_status"] == status
+
+
+def test_exact_date_persistence_failure_leaves_database_unchanged(
+    monkeypatch, tmp_path,
+):
+    entry = date_entry("Ada", birth=1815, death=1852)
+    database = {"Ada": entry}
+    before = copy.deepcopy(database)
+    monkeypatch.setattr(
+        refresh_wikidata_dates, "get_wikidata_entities_batch",
+        lambda *args, **kwargs: wikipedia_api.BatchLookupResult({
+            "Q1": exact_life_entity("+1815-12-10T00:00:00Z"),
+        }, None),
+    )
+    monkeypatch.setattr(
+        refresh_wikidata_dates, "update_database_entry",
+        lambda *args, **kwargs: (_ for _ in ()).throw(OSError("disk full")),
+    )
+
+    results = refresh_wikidata_dates.run_exact_date_enrichment(
+        database, ["Ada"], str(tmp_path), apply=True, limiter=object(),
+    )
+
+    assert database == before
+    assert results["records_updated"] == 0
+    assert results["operational_failures"] == 1
+
+
+def test_exact_date_cli_apply_requires_one_verified_backup(
+    monkeypatch, tmp_path,
+):
+    entry = date_entry("Ada", birth=1815, death=1852)
+    write_database(tmp_path, [entry])
+    calls = []
+
+    def backup(*args, **kwargs):
+        calls.append((args, kwargs))
+        return refresh_wikidata_dates.DatabaseBackupResult(
+            path=str(tmp_path / "backup.jsonl"), sha256="a" * 64,
+            size_bytes=1, created_at="2026-09-26T00:00:00Z",
+            label="before-wikidata-date-refresh", kind="operational",
+        )
+
+    monkeypatch.setattr(refresh_wikidata_dates, "create_database_backup", backup)
+    monkeypatch.setattr(
+        refresh_wikidata_dates, "get_wikidata_entities_batch",
+        lambda *args, **kwargs: wikipedia_api.BatchLookupResult({
+            "Q1": exact_life_entity("+1815-12-10T00:00:00Z"),
+        }, None),
+    )
+    monkeypatch.setattr(
+        refresh_wikidata_dates, "WIKIDATA_DATE_REFRESH_REPORTS_DIRECTORY",
+        tmp_path / "reports",
+    )
+
+    assert refresh_wikidata_dates.main([
+        "--data-folder", str(tmp_path), "--missing-exact-dates", "--apply",
+    ]) == 0
+    assert len(calls) == 1
+
+
+def test_exact_date_cli_backup_failure_prevents_lookup_and_write(
+    monkeypatch, tmp_path,
+):
+    entry = date_entry("Ada", birth=1815, death=1852)
+    write_database(tmp_path, [entry])
+    database_path = tmp_path / "database.jsonl"
+    before = database_path.read_bytes()
+    monkeypatch.setattr(
+        refresh_wikidata_dates, "create_database_backup",
+        lambda *args, **kwargs: refresh_wikidata_dates.DatabaseBackupResult(
+            error_reason="backup failed"
+        ),
+    )
+    monkeypatch.setattr(
+        refresh_wikidata_dates, "get_wikidata_entities_batch",
+        lambda *args, **kwargs: pytest.fail("lookup must follow verified backup"),
+    )
+
+    assert refresh_wikidata_dates.main([
+        "--data-folder", str(tmp_path), "--missing-exact-dates", "--apply",
+    ]) == 1
+    assert database_path.read_bytes() == before
+
+
+def test_exact_date_cli_dry_run_creates_no_backup(monkeypatch, tmp_path):
+    entry = date_entry("Ada", birth=1815, death=1852)
+    write_database(tmp_path, [entry])
+    before = (tmp_path / "database.jsonl").read_bytes()
+    monkeypatch.setattr(
+        refresh_wikidata_dates, "create_database_backup",
+        lambda *args, **kwargs: pytest.fail("dry-run must not create a backup"),
+    )
+    monkeypatch.setattr(
+        refresh_wikidata_dates, "get_wikidata_entities_batch",
+        lambda *args, **kwargs: wikipedia_api.BatchLookupResult({
+            "Q1": exact_life_entity("+1815-12-10T00:00:00Z"),
+        }, None),
+    )
+    monkeypatch.setattr(
+        refresh_wikidata_dates, "WIKIDATA_DATE_REFRESH_REPORTS_DIRECTORY",
+        tmp_path / "reports",
+    )
+
+    assert refresh_wikidata_dates.main([
+        "--data-folder", str(tmp_path), "--missing-exact-dates", "--dry-run",
+    ]) == 0
+    assert (tmp_path / "database.jsonl").read_bytes() == before
+
+
+
+def test_exact_date_apply_pairs_new_date_with_selected_year(monkeypatch, tmp_path):
+    entry = date_entry("Newly dated", birth=None, death=None)
+    database = {"Newly dated": entry}
+    write_database(tmp_path, [entry])
+    monkeypatch.setattr(
+        refresh_wikidata_dates, "get_wikidata_entities_batch",
+        lambda *args, **kwargs: wikipedia_api.BatchLookupResult({
+            "Q1": exact_life_entity(
+                "+1901-02-03T00:00:00Z", "+1980-04-05T00:00:00Z",
+            ),
+        }, None),
+    )
+
+    results = refresh_wikidata_dates.run_exact_date_enrichment(
+        database, ["Newly dated"], str(tmp_path), apply=True, limiter=object(),
+    )
+
+    assert database["Newly dated"]["wikidata"]["birth_year"] == 1901
+    assert database["Newly dated"]["wikidata"]["birth_date"] == "1901-02-03"
+    assert database["Newly dated"]["wikidata"]["death_year"] == 1980
+    assert database["Newly dated"]["wikidata"]["death_date"] == "1980-04-05"
+    assert results["records_updated"] == 1
+
+
+def test_exact_date_year_conflict_is_review_only(monkeypatch, tmp_path):
+    entry = date_entry("Conflict", birth=1900, death=None)
+    database = {"Conflict": entry}
+    write_database(tmp_path, [entry])
+    before = copy.deepcopy(database)
+    monkeypatch.setattr(
+        refresh_wikidata_dates, "get_wikidata_entities_batch",
+        lambda *args, **kwargs: wikipedia_api.BatchLookupResult({
+            "Q1": exact_life_entity("+1901-02-03T00:00:00Z"),
+        }, None),
+    )
+
+    results = refresh_wikidata_dates.run_exact_date_enrichment(
+        database, ["Conflict"], str(tmp_path), apply=True, limiter=object(),
+    )
+
+    assert database == before
+    assert results["conflicts_review_required"] == 1
+
+
+
+def test_legacy_refresh_does_not_erase_valid_exact_death_when_lookup_lacks_it(
+    monkeypatch, tmp_path,
+):
+    entry = date_entry("Stored exact", birth=1900, death=2000)
+    entry["wikidata"]["death_date"] = "2000-01-02"
+    database = {"Stored exact": entry}
+    write_database(tmp_path, [entry])
+    monkeypatch.setattr(
+        refresh_wikidata_dates, "get_wikidata_entities_batch",
+        lambda *args, **kwargs: wikipedia_api.BatchLookupResult({
+            "Q1": entity_with_dates("+1900-00-00T00:00:00Z", "+2000-00-00T00:00:00Z"),
+        }, None),
+    )
+
+    refresh_wikidata_dates.run_apply(
+        database, ["Stored exact"], str(tmp_path), limiter=object(),
+    )
+
+    assert database["Stored exact"]["wikidata"]["death_date"] == "2000-01-02"
+
+
+def test_legacy_refresh_reports_differing_exact_death_without_overwrite(
+    monkeypatch, tmp_path,
+):
+    entry = date_entry("Stored exact", birth=1900, death=2000)
+    entry["wikidata"]["death_date"] = "2000-01-02"
+    database = {"Stored exact": entry}
+    write_database(tmp_path, [entry])
+    before = copy.deepcopy(database)
+    monkeypatch.setattr(
+        refresh_wikidata_dates, "get_wikidata_entities_batch",
+        lambda *args, **kwargs: wikipedia_api.BatchLookupResult({
+            "Q1": exact_life_entity(None, "+2000-01-03T00:00:00Z"),
+        }, None),
+    )
+
+    results = refresh_wikidata_dates.run_apply(
+        database, ["Stored exact"], str(tmp_path), limiter=object(),
+    )
+
+    assert database == before
+    assert results["conflicts_review_required"] == 1

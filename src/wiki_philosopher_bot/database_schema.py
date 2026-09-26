@@ -641,6 +641,7 @@ def make_empty_database_entry(title: str) -> dict:
             "instances": [],
             "occupations": [],
             "birth_year": None,
+            "birth_date": None,
             "death_year": None,
             "death_date": None,
             "is_human": None,
@@ -886,21 +887,40 @@ def validate_database_entry(entry: dict) -> List[str]:
                     )
                 )
 
-        # Historical canonical entries predate exact death-date storage, so a
-        # missing key is deliberately equivalent to a null value.
-        if "death_date" in wikidata:
-            death_date = wikidata.get("death_date")
-            valid_death_date = isinstance(death_date, str) and re.fullmatch(
-                r"\d{4}-\d{2}-\d{2}", death_date
+        # Exact dates were added incrementally. Historical canonical entries
+        # may omit either key, which is deliberately equivalent to null.
+        for date_field, year_field in (
+            ("birth_date", "birth_year"),
+            ("death_date", "death_year"),
+        ):
+            if date_field not in wikidata:
+                continue
+            date_value = wikidata.get(date_field)
+            valid_date = isinstance(date_value, str) and re.fullmatch(
+                r"\d{4}-\d{2}-\d{2}", date_value
             )
-            if valid_death_date:
+            parsed_date = None
+            if valid_date:
                 try:
-                    date.fromisoformat(death_date)
+                    parsed_date = date.fromisoformat(date_value)
                 except ValueError:
-                    valid_death_date = False
-            if death_date is not None and not valid_death_date:
+                    valid_date = False
+            if date_value is not None and not valid_date:
                 errors.append(
-                    "wikidata.death_date must be an ISO date or null"
+                    "wikidata.{} must be an ISO date or null".format(date_field)
+                )
+                continue
+            year_value = wikidata.get(year_field)
+            if (
+                parsed_date is not None
+                and _is_int_not_bool(year_value)
+                and year_value > 0
+                and parsed_date.year != year_value
+            ):
+                errors.append(
+                    "wikidata.{} year must match wikidata.{}".format(
+                        date_field, year_field,
+                    )
                 )
 
         for field_name in (

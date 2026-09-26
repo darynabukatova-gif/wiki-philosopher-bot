@@ -628,6 +628,33 @@ def test_prepare_entity_captures_day_precision_death_date():
     ] == "2026-06-29"
 
 
+
+def test_prepare_entity_captures_and_persists_day_precision_birth_date():
+    entity = {
+        "claims": {
+            "P31": [],
+            "P106": [],
+            "P569": [{
+                "rank": "normal",
+                "mainsnak": {"snaktype": "value", "datavalue": {"value": {
+                    "time": "+1815-12-10T00:00:00Z",
+                    "precision": 11,
+                    "calendarmodel": "http://www.wikidata.org/entity/Q1985727",
+                }}},
+            }],
+        },
+    }
+
+    prepared = evaluation.prepare_entity(
+        "Ada Lovelace", {"Ada Lovelace": "Q7259"}, {"Q7259": entity},
+    )
+
+    assert prepared["birth"] == 1815
+    assert prepared["birth_date"] == "1815-12-10"
+    assert evaluation.prepared_entity_to_canonical_wikidata(prepared)[
+        "birth_date"
+    ] == "1815-12-10"
+
 def test_prepare_entity_carries_only_a_positive_english_wikisource_sitelink():
     entity = _entity_with_claims(["Q5"], ["Q4964182"])
     entity["sitelinks"] = {
@@ -1433,6 +1460,7 @@ def test_prepare_entity_cached_uses_available_canonical_wikidata_without_prepare
         "instances": ["Q5"],
         "occupations": ["Q4964182"],
         "birth_year": 1815,
+        "birth_date": None,
         "death_year": 1852,
         "death_date": None,
         "is_human": True,
@@ -1462,7 +1490,9 @@ def test_prepare_entity_cached_uses_available_canonical_wikidata_without_prepare
         "instances": ["Q5"],
         "occupations": ["Q4964182"],
         "birth": 1815,
+        "birth_date": None,
         "death": 1852,
+        "death_date": None,
         "is_human": True,
         "is_philosopher": True,
     }
@@ -1519,7 +1549,9 @@ def test_prepare_entity_cached_persists_available_canonical_wikidata(
         "instances": ["Q5"],
         "occupations": ["Q4964182"],
         "birth": 1815,
+        "birth_date": None,
         "death": 1852,
+        "death_date": None,
         "is_human": True,
         "is_philosopher": True,
     }
@@ -1541,6 +1573,7 @@ def test_prepare_entity_cached_persists_available_canonical_wikidata(
         "instances": ["Q5"],
         "occupations": ["Q4964182"],
         "birth_year": 1815,
+        "birth_date": None,
         "death_year": 1852,
         "death_date": None,
         "is_human": True,
@@ -1572,6 +1605,7 @@ def test_prepare_entity_cached_persists_no_qid_as_unavailable(monkeypatch, tmp_p
         "instances": [],
         "occupations": [],
         "birth_year": None,
+        "birth_date": None,
         "death_year": None,
         "death_date": None,
         "is_human": None,
@@ -1691,7 +1725,9 @@ def test_wikidata_filter_receives_equivalent_prepared_facts_from_canonical_entry
         "instances": ["Q5"],
         "occupations": ["Q4964182"],
         "birth": 1815,
+        "birth_date": None,
         "death": 1852,
+        "death_date": None,
         "is_human": True,
         "is_philosopher": True,
     }

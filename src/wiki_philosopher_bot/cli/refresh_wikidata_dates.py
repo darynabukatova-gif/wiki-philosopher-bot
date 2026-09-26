@@ -21,7 +21,9 @@ from wiki_philosopher_bot.date_policy import (
     date_is_within_recent_policy, recent_death_policy,
 )
 from wiki_philosopher_bot.runtime import persistence_lock
-from wiki_philosopher_bot.utils import RateLimiter, chunk_list
+from wiki_philosopher_bot.utils import (
+    RateLimiter, chunk_list, is_semantically_postable_philosopher,
+)
 from wiki_philosopher_bot.wikipedia_api import (
     get_wikidata_entities_batch,
     get_wikidata_time_claim_value,
@@ -45,11 +47,19 @@ def _limit_argument(value):
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(
-        description="Refresh only canonical Wikidata birth/death year fields."
+        description="Audit or refresh canonical Wikidata life-date fields."
     )
     parser.add_argument("--data-folder", default=CANONICAL_DATA_FOLDER)
     parser.add_argument("--limit", type=_limit_argument, default=None)
     parser.add_argument("--title", action="append", default=[])
+    parser.add_argument(
+        "--missing-exact-dates",
+        action="store_true",
+        help=(
+            "audit/enrich accepted Wikidata-backed philosophers that lack "
+            "an exact birth or death date"
+        ),
+    )
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--dry-run", action="store_true")
     mode.add_argument("--apply", action="store_true")
@@ -82,7 +92,32 @@ def select_eligible_titles(database):
     )
 
 
-def select_explicit_titles(database, requested_titles):
+def missing_exact_dates_needs_processing(entry):
+    """Whether an accepted Wikidata record lacks an exact known life date."""
+    if not is_semantically_postable_philosopher(entry):
+        return False
+    wikidata = entry.get("wikidata")
+    if not isinstance(wikidata, dict) or wikidata.get("status") != "available":
+        return False
+    qid = wikidata.get("qid")
+    if not isinstance(qid, str) or not qid:
+        return False
+    return (
+        wikidata.get("birth_date") is None
+        or wikidata.get("death_date") is None
+    )
+
+
+def select_missing_exact_date_titles(database):
+    return sorted(
+        title for title, entry in database.items()
+        if missing_exact_dates_needs_processing(entry)
+    )
+
+
+def select_explicit_titles(
+    database, requested_titles, predicate=wikidata_date_refresh_needs_processing,
+):
     seen = set()
     for title in requested_titles:
         if title in seen:
@@ -90,7 +125,7 @@ def select_explicit_titles(database, requested_titles):
         seen.add(title)
         if title not in database:
             raise ValueError("requested title does not exist: {!r}".format(title))
-        if not wikidata_date_refresh_needs_processing(database[title]):
+        if not predicate(database[title]):
             raise ValueError("requested title is not eligible: {!r}".format(title))
     return list(requested_titles)
 
@@ -158,17 +193,13 @@ def refresh_entry_dates(
     )
 
 
-def refreshed_life_dates_from_entity(entity):
-    """Return current P569/P570 values or a descriptive parse failure.
-
-    A missing property is a successful current absence.  A malformed property
-    is not evidence that a formerly cached date should be erased.
-    """
+def refreshed_life_date_evidence_from_entity(entity):
+    """Return selected life-year and conservative exact-date evidence."""
     if not isinstance(entity, dict):
-        return None, None, None, "entity is missing or malformed"
+        return None, "entity is missing or malformed"
     claims = entity.get("claims")
     if not isinstance(claims, dict):
-        return None, None, None, "entity claims are missing or malformed"
+        return None, "entity claims are missing or malformed"
 
     def claim_year(property_id):
         if property_id not in claims:
@@ -184,9 +215,8 @@ def refreshed_life_dates_from_entity(entity):
                 get_wikidata_time_claim_value(selected_claim)
             ), selected_claim, None
 
-        # A fully deprecated claim set carries no current date evidence.  For
-        # malformed current-rank value claims, retain the old cached date
-        # rather than treating parse failure as successful absence.
+        # A fully deprecated claim set carries no current date evidence. For
+        # malformed current-rank value claims, preserve cached canonical data.
         current_rank_claims = [
             claim for claim in property_claims
             if not isinstance(claim, dict)
@@ -205,23 +235,282 @@ def refreshed_life_dates_from_entity(entity):
             time_value = get_wikidata_time_claim_value(claim)
             if time_value is None or parse_wikidata_time_year(time_value) is None:
                 return None, None, "{} time value is malformed".format(property_id)
-        # Current-rank no-value/some-value claims are successful absence.
         return None, None, None
 
-    birth_year, _, error = claim_year("P569")
+    def exact_date_evidence(claim):
+        if claim is None:
+            return None, "absent"
+        mainsnak = claim.get("mainsnak") if isinstance(claim, dict) else None
+        datavalue = mainsnak.get("datavalue") if isinstance(mainsnak, dict) else None
+        value = datavalue.get("value") if isinstance(datavalue, dict) else None
+        if not isinstance(value, dict):
+            return None, "malformed"
+        if value.get("precision") != 11:
+            return None, "imprecise"
+        if value.get("calendarmodel") != (
+            "http://www.wikidata.org/entity/Q1985727"
+        ):
+            return None, "unsupported-calendar"
+        exact_date = parse_wikidata_time_claim_exact_date(claim)
+        if exact_date is None:
+            return None, "malformed"
+        return exact_date, "exact"
+
+    birth_year, birth_claim, error = claim_year("P569")
     if error is not None:
-        return None, None, None, error
+        return None, error
     death_year, death_claim, error = claim_year("P570")
+    if error is not None:
+        return None, error
+    birth_date, birth_status = exact_date_evidence(birth_claim)
+    death_date, death_status = exact_date_evidence(death_claim)
+    return {
+        "birth": {
+            "year": birth_year,
+            "date": birth_date,
+            "exact_date_status": birth_status,
+        },
+        "death": {
+            "year": death_year,
+            "date": death_date,
+            "exact_date_status": death_status,
+        },
+    }, None
+
+
+def refreshed_life_dates_from_entity(entity):
+    """Compatibility view of selected P569/P570 evidence."""
+    evidence, error = refreshed_life_date_evidence_from_entity(entity)
     if error is not None:
         return None, None, None, error
     return (
-        birth_year,
-        death_year,
-        parse_wikidata_time_claim_exact_date(death_claim)
-        if death_claim is not None else None,
+        evidence["birth"]["year"],
+        evidence["death"]["year"],
+        evidence["death"]["date"],
         None,
     )
 
+
+def _exact_date_enrichment_decision(title, entry, evidence):
+    """Classify additive exact-date evidence without mutating *entry*."""
+    wikidata = entry["wikidata"]
+    detail = {
+        "title": title,
+        "qid": wikidata.get("qid"),
+        "old_birth_year": wikidata.get("birth_year"),
+        "old_birth_date": wikidata.get("birth_date"),
+        "new_birth_year": evidence["birth"]["year"],
+        "new_birth_date": evidence["birth"]["date"],
+        "birth_exact_date_status": evidence["birth"]["exact_date_status"],
+        "old_death_year": wikidata.get("death_year"),
+        "old_death_date": wikidata.get("death_date"),
+        "new_death_year": evidence["death"]["year"],
+        "new_death_date": evidence["death"]["date"],
+        "death_exact_date_status": evidence["death"]["exact_date_status"],
+        "fields_to_write": [],
+        "conflicts": [],
+    }
+    for kind in ("birth", "death"):
+        old_year = detail["old_{}_year".format(kind)]
+        old_date = detail["old_{}_date".format(kind)]
+        new_year = detail["new_{}_year".format(kind)]
+        new_date = detail["new_{}_date".format(kind)]
+        if new_date is None:
+            continue
+        parsed_year = date.fromisoformat(new_date).year
+        if new_year != parsed_year:
+            detail["conflicts"].append(
+                "selected {} year/date evidence is inconsistent".format(kind)
+            )
+            continue
+        if old_year is not None and old_year != new_year:
+            detail["conflicts"].append(
+                "stored {} year differs from current selected claim".format(kind)
+            )
+            continue
+        if old_date is not None and old_date != new_date:
+            detail["conflicts"].append(
+                "stored {} date differs from current selected claim".format(kind)
+            )
+            continue
+        if old_year is None:
+            detail["fields_to_write"].append("{}_year".format(kind))
+        if old_date is None:
+            detail["fields_to_write"].append("{}_date".format(kind))
+
+    if detail["conflicts"]:
+        detail["classification"] = "conflict-review-required"
+        detail["fields_to_write"] = []
+    elif detail["fields_to_write"]:
+        detail["classification"] = "proposal"
+    else:
+        missing_statuses = [
+            detail["{}_exact_date_status".format(kind)]
+            for kind in ("birth", "death")
+            if detail["old_{}_date".format(kind)] is None
+        ]
+        detail["classification"] = (
+            "unsupported-or-imprecise"
+            if any(status in {"imprecise", "unsupported-calendar", "malformed"}
+                   for status in missing_statuses)
+            else "no-exact-date-available"
+        )
+    return detail
+
+
+def _persist_exact_date_proposal(database, detail, data_folder):
+    title = detail["title"]
+    expected = {
+        "birth_year": detail["old_birth_year"],
+        "birth_date": detail["old_birth_date"],
+        "death_year": detail["old_death_year"],
+        "death_date": detail["old_death_date"],
+    }
+
+    def update_exact_dates(entry):
+        wikidata = entry["wikidata"]
+        current = {field: wikidata.get(field) for field in expected}
+        if current != expected:
+            raise ValueError(
+                "canonical life-date fields changed before persistence for {!r}".format(
+                    title
+                )
+            )
+        for field in detail["fields_to_write"]:
+            wikidata[field] = detail["new_{}".format(field)]
+
+    return update_database_entry(
+        database, title, update_exact_dates, DATABASE_FILE, data_folder,
+        persistence_lock,
+    )
+
+
+def run_exact_date_enrichment(
+    database, selected_titles, data_folder, *, apply=False, limiter=None,
+):
+    """Audit or atomically persist additive exact-date proposals."""
+    if limiter is None:
+        limiter = RateLimiter(RATE_LIMIT)
+    results = {
+        "records_selected": len(selected_titles),
+        "successfully_checked": 0,
+        "birth_date_proposals": 0,
+        "death_date_proposals": 0,
+        "both_date_proposals": 0,
+        "records_updated": 0,
+        "unchanged": 0,
+        "no_exact_date_available": 0,
+        "unsupported_or_imprecise": 0,
+        "operational_failures": 0,
+        "conflicts_review_required": 0,
+        "errors": [],
+        "proposals": [],
+        "titles": [],
+    }
+    title_qids = {
+        title: database[title]["wikidata"].get("qid")
+        for title in selected_titles
+    }
+    qid_to_titles = {}
+    for title, qid in title_qids.items():
+        if not isinstance(qid, str) or not qid:
+            results["operational_failures"] += 1
+            results["errors"].append({
+                "title": title, "type": "MissingQid",
+                "message": "available Wikidata has no qid",
+            })
+        else:
+            qid_to_titles.setdefault(qid, []).append(title)
+
+    entities = {}
+    qid_errors = {}
+    for qid_batch in chunk_list(list(qid_to_titles), 50):
+        batch_result = get_wikidata_entities_batch(qid_batch, limiter=limiter)
+        if batch_result.error_reason is not None:
+            for qid in qid_batch:
+                qid_errors[qid] = batch_result.error_reason
+        else:
+            entities.update(batch_result.data)
+
+    for title in selected_titles:
+        qid = title_qids[title]
+        if not isinstance(qid, str) or not qid:
+            continue
+        if qid in qid_errors:
+            results["operational_failures"] += 1
+            results["errors"].append({
+                "title": title, "type": "WikidataRequestFailure",
+                "message": qid_errors[qid],
+            })
+            continue
+        evidence, error = refreshed_life_date_evidence_from_entity(
+            entities.get(qid)
+        )
+        if error is not None:
+            results["operational_failures"] += 1
+            results["errors"].append({
+                "title": title, "type": "MalformedEntity", "message": error,
+            })
+            continue
+        results["successfully_checked"] += 1
+        detail = _exact_date_enrichment_decision(
+            title, database[title], evidence
+        )
+        results["titles"].append(detail)
+        classification = detail["classification"]
+        if classification == "conflict-review-required":
+            results["conflicts_review_required"] += 1
+            continue
+        if classification == "unsupported-or-imprecise":
+            results["unsupported_or_imprecise"] += 1
+            continue
+        if classification == "no-exact-date-available":
+            results["no_exact_date_available"] += 1
+            continue
+
+        fields = set(detail["fields_to_write"])
+        results["birth_date_proposals"] += "birth_date" in fields
+        results["death_date_proposals"] += "death_date" in fields
+        results["both_date_proposals"] += {"birth_date", "death_date"} <= fields
+        results["proposals"].append(detail)
+        if not apply:
+            continue
+        try:
+            _persist_exact_date_proposal(database, detail, data_folder)
+        except (OSError, ValueError) as persistence_error:
+            results["operational_failures"] += 1
+            results["errors"].append({
+                "title": title,
+                "type": type(persistence_error).__name__,
+                "message": str(persistence_error),
+            })
+        else:
+            results["records_updated"] += 1
+
+    results["unchanged"] = (
+        results["successfully_checked"]
+        - results["conflicts_review_required"]
+        - len(results["proposals"])
+    )
+    return results
+
+
+def build_exact_date_enrichment_report(
+    database, selected_titles, limit, results, *, apply, backup,
+):
+    return {
+        "operation": "wikidata-exact-date-enrichment",
+        "mode": "apply" if apply else "dry-run",
+        "scope": "accepted-philosophers-missing-exact-dates",
+        "total_canonical_entries": len(database),
+        "selected": {
+            "count": len(selected_titles),
+            "limit": limit,
+            "titles": list(selected_titles),
+        },
+        "results": results,
+        "backup": backup,
+    }
 
 def detect_recent_death_update(
     old_death_year,
@@ -346,6 +635,7 @@ def run_apply(
         "death_sign_corrections": 0,
         "fields_changed_to_none": 0,
         "operational_failures": 0,
+        "conflicts_review_required": 0,
         "errors": [],
         "titles": [],
         "recent_death_updates": [],
@@ -409,9 +699,28 @@ def run_apply(
                 old_birth, old_death, old_death_date,
             )
             continue
+        if (
+            old_death_date is not None
+            and new_death_date is not None
+            and old_death_date != new_death_date
+        ):
+            results["conflicts_review_required"] += 1
+            results["errors"].append({
+                "title": title,
+                "type": "ExactDateConflict",
+                "message": "stored death date differs from current selected claim",
+            })
+            results["titles"].append(_title_result(
+                title, old_birth, old_birth, old_death, old_death,
+                old_death_date, old_death_date,
+            ))
+            continue
+        effective_death_date = (
+            new_death_date if new_death_date is not None else old_death_date
+        )
         try:
             refresh_entry_dates(
-                database, title, new_birth, new_death, new_death_date,
+                database, title, new_birth, new_death, effective_death_date,
                 data_folder,
             )
         except ValueError:
@@ -424,7 +733,7 @@ def run_apply(
             continue
         _apply_successful_dates(
             results, title, old_birth, old_death, old_death_date, new_birth,
-            new_death, new_death_date, today, recent_policy,
+            new_death, effective_death_date, today, recent_policy,
         )
 
     results["remaining_retryable"] = results["operational_failures"]
@@ -468,10 +777,15 @@ def main(argv=None):
     started_at = time.time()
     args = parse_args(argv)
     database = load_database(DATABASE_FILE, args.data_folder)
-    eligible_titles = select_eligible_titles(database)
+    if args.missing_exact_dates:
+        eligible_titles = select_missing_exact_date_titles(database)
+        predicate = missing_exact_dates_needs_processing
+    else:
+        eligible_titles = select_eligible_titles(database)
+        predicate = wikidata_date_refresh_needs_processing
     try:
         selected_titles = (
-            select_explicit_titles(database, args.title)
+            select_explicit_titles(database, args.title, predicate=predicate)
             if args.title else eligible_titles if args.limit is None
             else eligible_titles[:args.limit]
         )
@@ -490,10 +804,21 @@ def main(argv=None):
         )
         backup_result = backup.as_report(True, OPERATIONAL_BACKUP_RETENTION_DAYS)
         if not backup.created:
-            print(json.dumps({"mode": "apply", "backup": backup_result,
-                "error": "Database backup failed; no canonical mutation was attempted."},
-                indent=2, ensure_ascii=False, sort_keys=False))
+            print(json.dumps({
+                "mode": "apply", "backup": backup_result,
+                "error": "Database backup failed; no canonical mutation was attempted.",
+            }, indent=2, ensure_ascii=False, sort_keys=False))
             return 1
+
+    if args.missing_exact_dates:
+        results = run_exact_date_enrichment(
+            database, selected_titles, args.data_folder, apply=args.apply,
+        )
+        report = build_exact_date_enrichment_report(
+            database, selected_titles, args.limit, results, apply=args.apply,
+            backup=backup_result,
+        )
+    elif args.apply:
         run_date = date.today()
         policy = recent_death_policy(
             run_date, default_years=RECENT_DEATH_WINDOW_YEARS,
@@ -506,10 +831,10 @@ def main(argv=None):
             database, len(eligible_titles), selected_titles, args.limit, results,
             policy,
         )
+        report["backup"] = backup_result
     else:
         report = build_dry_run_report(database, selected_titles, args.limit)
-
-    report["backup"] = backup_result
+        report["backup"] = backup_result
 
     report = add_report_timing(report, started_at, time.time())
     print(json.dumps(report, indent=2, ensure_ascii=False, sort_keys=False))
@@ -528,6 +853,8 @@ def main(argv=None):
         print("Recent death updates: {}".format(recent_deaths["count"]))
         for update in recent_deaths["titles"]:
             print("- {} — {}".format(update["title"], update["death_date"]))
+    if args.apply and report.get("results", {}).get("operational_failures"):
+        return 1
     return 0
 
 

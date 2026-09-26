@@ -1918,18 +1918,18 @@ def parse_wikidata_time_claim_exact_date(claim):
 
 
 def get_years_from_wikidata(entity):
-    birth, death, _ = get_life_dates_from_wikidata(entity)
+    birth, _, death, _ = get_life_dates_from_wikidata(entity)
     return birth, death
 
 
 def get_life_dates_from_wikidata(entity):
-    """Return signed life years plus a supported exact death date."""
+    """Return years and supported exact dates from the same selected claims."""
     if not isinstance(entity, dict):
-        return None, None, None
+        return None, None, None, None
 
     claims = entity.get("claims", {})
     if not isinstance(claims, dict):
-        return None, None, None
+        return None, None, None, None
 
     def get_selected_year(prop):
         claim = select_wikidata_time_claim(claims.get(prop))
@@ -1940,14 +1940,18 @@ def get_life_dates_from_wikidata(entity):
             claim,
         )
 
-    birth, _ = get_selected_year("P569")
+    birth, birth_claim = get_selected_year("P569")
     death, death_claim = get_selected_year("P570")
+    birth_date = (
+        parse_wikidata_time_claim_exact_date(birth_claim)
+        if birth_claim is not None else None
+    )
     death_date = (
         parse_wikidata_time_claim_exact_date(death_claim)
         if death_claim is not None else None
     )
 
-    return birth, death, death_date
+    return birth, birth_date, death, death_date
 
 
 def get_english_wikisource_sitelink_title(entity):

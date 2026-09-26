@@ -87,6 +87,7 @@ def test_runtime_empty_entry_matches_canonical_schema():
             "instances": [],
             "occupations": [],
             "birth_year": None,
+            "birth_date": None,
             "death_year": None,
             "death_date": None,
             "is_human": None,
@@ -140,6 +141,37 @@ def test_schema_validator_accepts_historical_wikidata_without_death_date():
 
     assert validate_database_entry(entry) == []
 
+
+
+def test_schema_validator_accepts_historical_wikidata_without_birth_date():
+    entry = make_empty_database_entry("Historical philosopher")
+    del entry["wikidata"]["birth_date"]
+
+    assert validate_database_entry(entry) == []
+
+
+def test_schema_validator_accepts_exact_wikidata_birth_date():
+    entry = make_empty_database_entry("Ada Lovelace")
+    entry["wikidata"]["birth_year"] = 1815
+    entry["wikidata"]["birth_date"] = "1815-12-10"
+
+    assert validate_database_entry(entry) == []
+
+
+@pytest.mark.parametrize("birth_date", ("1815-12-1", "1815-02-30", "not-a-date", 18151210))
+def test_schema_validator_rejects_invalid_wikidata_birth_date(birth_date):
+    entry = make_empty_database_entry("Ada Lovelace")
+    entry["wikidata"]["birth_date"] = birth_date
+
+    assert "wikidata.birth_date must be an ISO date or null" in validate_database_entry(entry)
+
+
+def test_schema_validator_rejects_exact_birth_date_year_conflict():
+    entry = make_empty_database_entry("Ada Lovelace")
+    entry["wikidata"]["birth_year"] = 1816
+    entry["wikidata"]["birth_date"] = "1815-12-10"
+
+    assert "wikidata.birth_date year must match wikidata.birth_year" in validate_database_entry(entry)
 
 def test_external_links_are_additive_for_historical_records_and_round_trip(tmp_path):
     entry = make_empty_database_entry("Historical philosopher")

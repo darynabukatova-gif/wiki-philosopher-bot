@@ -135,7 +135,7 @@ def prepare_entity(title, all_qids, all_entities, wikidata_errors=None):
     instances = get_instances(entity)
     occupations = get_occupations(entity)
 
-    birth, death, death_date = get_life_dates_from_wikidata(entity)
+    birth, birth_date, death, death_date = get_life_dates_from_wikidata(entity)
     wikisource_url = get_english_wikisource_sitelink(entity)
 
     prepared = {
@@ -147,6 +147,7 @@ def prepare_entity(title, all_qids, all_entities, wikidata_errors=None):
         "occupations": occupations,
 
         "birth": birth,
+        "birth_date": birth_date,
         "death": death,
         "death_date": death_date,
         "wikisource_url": wikisource_url,
@@ -174,7 +175,9 @@ def canonical_wikidata_to_prepared(title, wikidata):
             "instances": wikidata.get("instances"),
             "occupations": wikidata.get("occupations"),
             "birth": wikidata.get("birth_year"),
+            "birth_date": wikidata.get("birth_date"),
             "death": wikidata.get("death_year"),
+            "death_date": wikidata.get("death_date"),
             "is_human": wikidata.get("is_human"),
             "is_philosopher": wikidata.get("is_philosopher"),
         }
@@ -205,6 +208,7 @@ def prepared_entity_to_canonical_wikidata(prepared):
             "instances": prepared.get("instances"),
             "occupations": prepared.get("occupations"),
             "birth_year": prepared.get("birth"),
+            "birth_date": prepared.get("birth_date"),
             "death_year": prepared.get("death"),
             "death_date": prepared.get("death_date"),
             "is_human": prepared.get("is_human"),
@@ -219,6 +223,7 @@ def prepared_entity_to_canonical_wikidata(prepared):
         "instances": [],
         "occupations": [],
         "birth_year": None,
+        "birth_date": None,
         "death_year": None,
         "death_date": None,
         "is_human": None,

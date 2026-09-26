@@ -1084,8 +1084,44 @@ def test_get_life_dates_from_wikidata_uses_same_rank_aware_death_claim():
 
     assert wikipedia_api.get_life_dates_from_wikidata({
         "claims": {"P570": [deprecated, normal]},
-    }) == (None, 2026, "2026-06-29")
+    }) == (None, None, 2026, "2026-06-29")
 
+
+
+def test_get_life_dates_from_wikidata_returns_exact_birth_and_death_from_selected_claims():
+    birth = wikidata_time_claim("+1815-12-10T00:00:00Z")
+    death = wikidata_time_claim("+1852-11-27T00:00:00Z")
+    for claim in (birth, death):
+        claim["mainsnak"]["datavalue"]["value"].update({
+            "precision": 11,
+            "calendarmodel": "http://www.wikidata.org/entity/Q1985727",
+        })
+
+    assert wikipedia_api.get_life_dates_from_wikidata({
+        "claims": {"P569": [birth], "P570": [death]},
+    }) == (1815, "1815-12-10", 1852, "1852-11-27")
+
+
+@pytest.mark.parametrize(
+    "precision,calendar,time_value",
+    [
+        (10, "http://www.wikidata.org/entity/Q1985727", "+1815-12-00T00:00:00Z"),
+        (9, "http://www.wikidata.org/entity/Q1985727", "+1815-00-00T00:00:00Z"),
+        (11, "http://www.wikidata.org/entity/Q1985786", "+1815-12-10T00:00:00Z"),
+        (11, "http://www.wikidata.org/entity/Q1985727", "+1815-02-30T00:00:00Z"),
+    ],
+)
+def test_get_life_dates_never_invents_exact_birth_date(
+    precision, calendar, time_value,
+):
+    claim = wikidata_time_claim(time_value)
+    claim["mainsnak"]["datavalue"]["value"].update({
+        "precision": precision, "calendarmodel": calendar,
+    })
+
+    assert wikipedia_api.get_life_dates_from_wikidata({
+        "claims": {"P569": [claim]},
+    }) == (1815, None, None, None)
 
 def test_get_wikidata_ids_batch_ignores_non_object_page_entries(monkeypatch):
     response = FakeResponse(

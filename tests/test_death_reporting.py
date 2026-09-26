@@ -44,8 +44,6 @@ def record(
         death_date=death_date,
     )
     if birth_date is not None:
-        # Future-compatible reporting input only; Phase 2 does not add this to
-        # the canonical schema or production records.
         value["wikidata"]["birth_date"] = birth_date
     value["posting"]["has_been_posted"] = posted
     return value
@@ -322,3 +320,19 @@ def test_birth_after_death_has_no_age():
 def test_missing_either_exact_date_has_no_age():
     assert _age_at_death(None, date(2021, 1, 1)) is None
     assert _age_at_death(date(2000, 1, 1), None) is None
+
+
+
+def test_malformed_birth_date_does_not_hide_valid_exact_death():
+    item = record(
+        "Malformed birth", birth_year=1950, birth_date="1950-02-30",
+        death_year=2025, death_date="2025-01-01",
+    )
+
+    report = build({"Malformed birth": item})
+
+    assert report["interval_results"]["exact_deaths"] == 1
+    row = report["interval_results"]["rows"][0]
+    assert row["title"] == "Malformed birth"
+    assert row["birth_date"] is None
+    assert row["age_at_death"] is None
