@@ -97,6 +97,50 @@ unknown may be cancelled only with explicit unsafe confirmation. No ambiguous
 attempt is automatically resent. Reconciliation uses the same atomic canonical
 rewrite as dispatch and never contacts Telegram.
 
+## Recent-death notification outbox (Phase 1)
+
+Recent-death discovery remains Wikidata P570-only and uses the configurable
+`RECENT_DEATH_WINDOW_DAYS` (365 by default) only for a newly discovered,
+Gregorian day-precision death date. `wiki-philosopher-check-recent-deaths
+--apply` is now prepare-only: it atomically writes the death fact and an
+optional per-record `recent_death_notifications` pending event together, then
+never contacts Telegram. Old or imprecise deaths retain their canonical date
+facts but create no event. Existing records omit this optional history and
+therefore require no migration.
+
+Each event stores its ID, title, QID, exact death date, exact escaped Telegram
+HTML payload, SHA-256 payload fingerprint, timestamps, delivery state, and
+safe operator/error metadata. States are `pending`, `sent`, `failed`,
+`unknown`, and `cancelled`. A dispatcher sends exactly the stored text only by
+explicit ID and only once; confirmed `sent` requires a positive Telegram
+message ID. Transport/malformed outcomes are `unknown`, never retried
+automatically. `wiki-philosopher-reconcile-recent-death` is the only operator
+path for recording delivery evidence or closing unresolved events. A stale
+pending event is not proof that Telegram was never contacted, so deployment
+must checkpoint pending state before calling dispatch and must not blindly
+rerun dispatch after a failure. This outbox is independent from philosopher
+posting attempts.
+
+## Manual GitHub Actions recent-death deployment (Phase 2)
+
+`.github/workflows/recent-death-monitor.yml` is intentionally triggered only
+by `workflow_dispatch`; it has no schedule. It shares the
+`wiki-philosopher-authoritative-data` non-cancelling concurrency group with the
+normal philosopher-post workflow because both update the same private
+`database.jsonl`. The workflow checks out that authoritative private repository
+using `DATA_REPOSITORY` and `DATA_REPO_TOKEN`, copies only `database.jsonl`,
+and commits only that file as `github-actions[bot]`.
+
+Prepare accepts optional exact `title` and `recent_days` inputs through quoted
+environment variables. It writes an invocation-specific JSON result containing
+only `new_notification_ids`; the workflow never scans all pending events or
+selects the newest event. If data changed, it pushes the prepared checkpoint
+before dispatch. Telegram credentials are scoped solely to the dispatch step.
+Each same-run ID is dispatched once, its terminal state is pushed before the
+next ID, and a failed/unknown terminal state stops the run. A terminal push
+failure is fatal and explicitly requires reconciliation rather than a rerun.
+No-change and historical/imprecise fact-only runs never dispatch Telegram.
+
 ## Current persistence, configuration, and HTTP safety
 
 Normal domain writes use `cache.update_database_entry()`. Network/API work is

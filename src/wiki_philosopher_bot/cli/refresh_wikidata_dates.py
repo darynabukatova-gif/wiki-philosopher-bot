@@ -8,6 +8,7 @@ from pathlib import Path
 
 from wiki_philosopher_bot.cache import DatabaseBackupResult, create_database_backup, load_database, update_database_entry
 from wiki_philosopher_bot.config import (
+    RECENT_DEATH_WINDOW_DAYS,
     CANONICAL_DATA_FOLDER,
     DATABASE_FILE,
     RATE_LIMIT,
@@ -226,7 +227,7 @@ def detect_recent_death_update(
     new_death_date,
     *,
     today,
-    recent_days=365,
+    recent_days=RECENT_DEATH_WINDOW_DAYS,
 ):
     """Whether a fresh exact death date is newly established and recent."""
     if not isinstance(today, date) or isinstance(today, datetime):

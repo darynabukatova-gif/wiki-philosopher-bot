@@ -1,0 +1,204 @@
+name: Manual recent-death monitor
+
+on:
+  workflow_dispatch:
+    inputs:
+      recent_days:
+        description: 'Optional positive recent-death window in days (blank uses configured default)'
+        required: false
+        type: string
+      title:
+        description: 'Optional exact canonical title (leave blank for normal scan)'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wiki-philosopher-authoritative-data
+  cancel-in-progress: false
+
+jobs:
+  monitor:
+    name: Prepare, checkpoint, and dispatch recent-death notifications
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source repository
+        uses: actions/checkout@v7
+
+      - name: Require private data repository configuration
+        env:
+          DATA_REPOSITORY: ${{ vars.DATA_REPOSITORY }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${DATA_REPOSITORY}" ]]; then
+            echo "::error::Set the DATA_REPOSITORY repository variable to owner/private-data-repository."
+            exit 1
+          fi
+          if [[ ! "${DATA_REPOSITORY}" =~ ^[^/[:space:]]+/[^/[:space:]]+$ ]]; then
+            echo "::error::DATA_REPOSITORY must have the form owner/private-data-repository."
+            exit 1
+          fi
+
+      - name: Check out authoritative private data repository
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ vars.DATA_REPOSITORY }}
+          token: ${{ secrets.DATA_REPO_TOKEN }}
+          path: private-data
+          fetch-depth: 1
+          persist-credentials: true
+
+      - name: Configure private data-repository commit identity
+        run: |
+          set -euo pipefail
+          git -C private-data config user.name "github-actions[bot]"
+          git -C private-data config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Install authoritative database for the application
+        run: |
+          set -euo pipefail
+          test -f private-data/database.jsonl
+          test ! -L private-data/database.jsonl
+          mkdir -p data
+          cp -- private-data/database.jsonl data/database.jsonl
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+
+      - name: Install application
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install .
+
+      - id: prepare
+        name: Discover deaths and prepare durable notifications without Telegram
+        env:
+          REQUESTED_TITLE: ${{ inputs.title }}
+          REQUESTED_RECENT_DAYS: ${{ inputs.recent_days }}
+        run: |
+          set -euo pipefail
+          result_path="${RUNNER_TEMP}/recent-death-prepare.json"
+          prepare_args=(--apply --result-json "${result_path}")
+          if [ -n "$REQUESTED_RECENT_DAYS" ]; then
+            prepare_args+=(--recent-days "$REQUESTED_RECENT_DAYS")
+          fi
+          if [ -n "$REQUESTED_TITLE" ]; then
+            prepare_args+=(--title "$REQUESTED_TITLE")
+          fi
+          wiki-philosopher-check-recent-deaths "${prepare_args[@]}"
+          RESULT_PATH="${result_path}" IDS_PATH="${RUNNER_TEMP}/recent-death-notification-ids.txt" python - <<'PY' >> "${GITHUB_OUTPUT}"
+          import json
+          import os
+
+          with open(os.environ["RESULT_PATH"], encoding="utf-8") as handle:
+              result = json.load(handle)
+          if result.get("mode") != "apply" or result.get("operation") != "recent-death-discovery-prepare":
+              raise SystemExit("Unexpected recent-death prepare result.")
+          notification_ids = result.get("new_notification_ids")
+          if not isinstance(notification_ids, list) or not all(isinstance(value, str) and value for value in notification_ids):
+              raise SystemExit("Prepare result has invalid newly created notification IDs.")
+          if len(set(notification_ids)) != len(notification_ids):
+              raise SystemExit("Prepare result has duplicate notification IDs.")
+          with open(os.environ["IDS_PATH"], "w", encoding="utf-8") as handle:
+              for notification_id in notification_ids:
+                  handle.write(notification_id + "\n")
+          print("notification_ids_path={}".format(os.environ["IDS_PATH"]))
+          print("notification_count={}".format(len(notification_ids)))
+          PY
+
+      - id: pending_checkpoint
+        name: Commit and push prepared database checkpoint
+        run: |
+          set -euo pipefail
+          if cmp -s data/database.jsonl private-data/database.jsonl; then
+            echo "database_changed=false" >> "${GITHUB_OUTPUT}"
+            echo "checkpointed=false" >> "${GITHUB_OUTPUT}"
+            echo "No death facts or notification events changed the authoritative database."
+            exit 0
+          fi
+          cp -- data/database.jsonl private-data/database.jsonl
+          git -C private-data add -- database.jsonl
+          staged_files="$(git -C private-data diff --cached --name-only)"
+          if [[ "${staged_files}" != "database.jsonl" ]]; then
+            echo "::error::Refusing to commit anything other than database.jsonl."
+            exit 1
+          fi
+          if git -C private-data diff --cached --quiet; then
+            echo "::error::Prepared database differs but no database.jsonl change was staged."
+            exit 1
+          fi
+          git -C private-data commit -m "Checkpoint recent-death preparation"
+          git -C private-data push origin HEAD
+          echo "database_changed=true" >> "${GITHUB_OUTPUT}"
+          echo "checkpointed=true" >> "${GITHUB_OUTPUT}"
+
+      - name: Require a durable pending checkpoint before any notification dispatch
+        if: ${{ steps.prepare.outputs.notification_count != '0' && steps.pending_checkpoint.outputs.checkpointed != 'true' }}
+        run: |
+          echo "::error::Recent-death notifications were prepared without a pushed pending checkpoint. Dispatch is forbidden."
+          exit 1
+
+      - name: Explain no-action completion
+        if: ${{ steps.prepare.outputs.notification_count == '0' && steps.pending_checkpoint.outputs.database_changed == 'false' }}
+        run: echo "No actionable recent death was prepared; no Telegram dispatch was run."
+
+      - name: Explain data-only checkpoint completion
+        if: ${{ steps.prepare.outputs.notification_count == '0' && steps.pending_checkpoint.outputs.database_changed == 'true' }}
+        run: echo "Death facts changed and were checkpointed, but no actionable notification was prepared; no Telegram dispatch was run."
+
+      - name: Dispatch only notifications prepared by this workflow run
+        if: ${{ steps.prepare.outputs.notification_count != '0' && steps.pending_checkpoint.outputs.checkpointed == 'true' }}
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          RECENT_DEATH_TELEGRAM_CHAT_ID: ${{ secrets.RECENT_DEATH_TELEGRAM_CHAT_ID }}
+          NOTIFICATION_IDS_PATH: ${{ steps.prepare.outputs.notification_ids_path }}
+        run: |
+          set -euo pipefail
+          while IFS= read -r notification_id; do
+            test -n "${notification_id}"
+            result_path="${RUNNER_TEMP}/recent-death-dispatch-${notification_id}.json"
+            set +e
+            wiki-philosopher-dispatch-recent-death --notification-id "${notification_id}" --confirm-pending-dispatch --result-json "${result_path}"
+            dispatch_status=$?
+            set -e
+            RESULT_PATH="${result_path}" NOTIFICATION_ID="${notification_id}" python - <<'PY'
+            import json
+            import os
+
+            with open(os.environ["RESULT_PATH"], encoding="utf-8") as handle:
+                result = json.load(handle)
+            if result.get("operation") != "recent-death-dispatch":
+                raise SystemExit("Unexpected dispatch result.")
+            if result.get("notification_id") != os.environ["NOTIFICATION_ID"]:
+                raise SystemExit("Dispatch result ID did not match this-run prepared notification.")
+            if result.get("persistence_succeeded") is not True:
+                raise SystemExit("Terminal state was not persisted locally; do not rerun dispatch.")
+            if result.get("ending_state") not in ("sent", "failed", "unknown"):
+                raise SystemExit("Dispatch did not persist a terminal notification state.")
+            PY
+            cp -- data/database.jsonl private-data/database.jsonl
+            git -C private-data add -- database.jsonl
+            staged_files="$(git -C private-data diff --cached --name-only)"
+            if [[ "${staged_files}" != "database.jsonl" ]]; then
+              echo "::error::Refusing to commit anything other than database.jsonl."
+              exit 1
+            fi
+            if git -C private-data diff --cached --quiet; then
+              echo "::error::Terminal notification state was reported durable but database.jsonl did not change."
+              exit 1
+            fi
+            git -C private-data commit -m "Checkpoint recent-death notification ${notification_id}"
+            if ! git -C private-data push origin HEAD; then
+              echo "::error::Terminal checkpoint push failed. Do not rerun dispatch; the authoritative remote may still be pending and reconciliation is required."
+              exit 1
+            fi
+            if [ "${dispatch_status}" -ne 0 ]; then
+              echo "::error::Notification reached a terminal non-success state. It was checkpointed; do not retry automatically."
+              exit "${dispatch_status}"
+            fi
+          done < "${NOTIFICATION_IDS_PATH}"

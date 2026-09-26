@@ -127,6 +127,32 @@ POSTING_ATTEMPT_ALLOWED_TRANSITIONS = {
     "sent": frozenset(),
     "cancelled": frozenset(),
 }
+
+# Recent-death notifications use their own optional top-level history. They
+# share conservative delivery states with philosopher-post attempts but remain
+# a separate outbox, so neither workflow can block the other.
+RECENT_DEATH_NOTIFICATION_STATES = frozenset(
+    ("pending", "sent", "failed", "unknown", "cancelled")
+)
+UNRESOLVED_RECENT_DEATH_NOTIFICATION_STATES = frozenset(
+    ("pending", "failed", "unknown")
+)
+RECENT_DEATH_NOTIFICATION_ERROR_KINDS = frozenset(
+    (
+        "telegram_rejected",
+        "transport_ambiguous",
+        "response_invalid",
+        "persistence_error",
+        "configuration_error",
+    )
+)
+RECENT_DEATH_NOTIFICATION_ALLOWED_TRANSITIONS = {
+    "pending": frozenset(("sent", "failed", "unknown", "cancelled")),
+    "failed": frozenset(("cancelled",)),
+    "unknown": frozenset(("sent", "cancelled")),
+    "sent": frozenset(),
+    "cancelled": frozenset(),
+}
 _SHA256_HEX_RE = re.compile(r"^[0-9a-f]{64}$")
 _UTC_TIMESTAMP_RE = re.compile(
     r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$"
@@ -423,6 +449,157 @@ def transition_posting_attempt(
         updated["resolution_note"] = resolution_note
 
     errors = validate_posting_attempt(updated)
+    if errors:
+        raise ValueError("\n".join(errors))
+    return updated
+
+
+def _is_iso_date(value):
+    if not isinstance(value, str):
+        return False
+    try:
+        date.fromisoformat(value)
+    except ValueError:
+        return False
+    return True
+
+
+def _validate_recent_death_notification(notification) -> List[str]:
+    """Validate one durable, per-person recent-death notification event."""
+    if not isinstance(notification, dict):
+        return ["recent_death_notifications item must be an object"]
+    errors = []
+    required = (
+        "notification_id", "title", "qid", "death_date", "message_text",
+        "message_fingerprint", "created_at", "state", "state_changed_at",
+        "telegram_message_id", "error_kind", "error_summary", "resolution_note",
+    )
+    for key in required:
+        if key not in notification:
+            errors.append("recent_death_notifications item missing {}".format(key))
+    if not isinstance(notification.get("notification_id"), str) or not notification.get("notification_id").strip():
+        errors.append("recent_death_notifications.notification_id must be a non-empty string")
+    if not isinstance(notification.get("title"), str) or not notification.get("title").strip():
+        errors.append("recent_death_notifications.title must be a non-empty string")
+    if not isinstance(notification.get("qid"), str) or re.fullmatch(r"Q[1-9][0-9]*", notification.get("qid")) is None:
+        errors.append("recent_death_notifications.qid must be a canonical Wikidata QID")
+    if not _is_iso_date(notification.get("death_date")):
+        errors.append("recent_death_notifications.death_date must be an ISO calendar date")
+    message_text = notification.get("message_text")
+    if not isinstance(message_text, str) or not message_text:
+        errors.append("recent_death_notifications.message_text must be a non-empty string")
+    fingerprint = notification.get("message_fingerprint")
+    if not _is_sha256_hex(fingerprint):
+        errors.append("recent_death_notifications.message_fingerprint must be a SHA-256 hex string")
+    elif isinstance(message_text, str) and message_text and fingerprint != message_fingerprint(message_text):
+        errors.append("recent_death_notifications.message_fingerprint must match message_text")
+    for field_name in ("created_at", "state_changed_at"):
+        if not _is_utc_timestamp(notification.get(field_name)):
+            errors.append("recent_death_notifications.{} must be a UTC timestamp".format(field_name))
+    state = notification.get("state")
+    if state not in RECENT_DEATH_NOTIFICATION_STATES:
+        errors.append("recent_death_notifications.state must be a supported state")
+    message_id = notification.get("telegram_message_id")
+    if message_id is not None and not (_is_int_not_bool(message_id) and message_id > 0):
+        errors.append("recent_death_notifications.telegram_message_id must be a positive integer or null")
+    error_kind = notification.get("error_kind")
+    if error_kind is not None and error_kind not in RECENT_DEATH_NOTIFICATION_ERROR_KINDS:
+        errors.append("recent_death_notifications.error_kind must be a supported value or null")
+    for field_name, sanitizer in (("error_summary", sanitize_posting_attempt_error_summary), ("resolution_note", sanitize_posting_attempt_resolution_note)):
+        value = notification.get(field_name)
+        if value is not None:
+            try:
+                if sanitizer(value) != value:
+                    errors.append("recent_death_notifications.{} must already be normalized".format(field_name))
+            except ValueError:
+                errors.append("recent_death_notifications.{} must be a safe short single-line string or null".format(field_name))
+    if state == "sent":
+        if message_id is None:
+            errors.append("recent_death_notifications.sent requires telegram_message_id")
+        if error_kind is not None or notification.get("error_summary") is not None:
+            errors.append("recent_death_notifications.sent must not retain an unresolved error")
+    if state in ("failed", "unknown") and error_kind is None:
+        errors.append("recent_death_notifications.{} requires error_kind".format(state))
+    if state == "cancelled" and not notification.get("resolution_note"):
+        errors.append("recent_death_notifications.cancelled requires resolution_note")
+    return errors
+
+
+def validate_recent_death_notification(notification) -> List[str]:
+    return _validate_recent_death_notification(notification)
+
+
+def make_pending_recent_death_notification(title, qid, death_date, message_text, notification_id=None, now=None):
+    timestamp = _utc_timestamp_text(now)
+    notification = {
+        "notification_id": notification_id or str(uuid.uuid4()),
+        "title": title, "qid": qid, "death_date": death_date,
+        "message_text": message_text,
+        "message_fingerprint": message_fingerprint(message_text),
+        "created_at": timestamp, "state": "pending", "state_changed_at": timestamp,
+        "telegram_message_id": None, "error_kind": None, "error_summary": None,
+        "resolution_note": None,
+    }
+    errors = validate_recent_death_notification(notification)
+    if errors:
+        raise ValueError("\n".join(errors))
+    return notification
+
+
+def recent_death_notifications(entry):
+    notifications = entry.get("recent_death_notifications", []) if isinstance(entry, dict) else []
+    return notifications if isinstance(notifications, list) else []
+
+
+def recent_death_notification_by_id(entry, notification_id):
+    for notification in recent_death_notifications(entry):
+        if notification.get("notification_id") == notification_id:
+            return notification
+    return None
+
+
+def has_unresolved_recent_death_notification(entry):
+    return any(item.get("state") in UNRESOLVED_RECENT_DEATH_NOTIFICATION_STATES for item in recent_death_notifications(entry))
+
+
+def recent_death_notification_for_date(entry, death_date):
+    for notification in recent_death_notifications(entry):
+        if notification.get("death_date") == death_date:
+            return notification
+    return None
+
+
+def transition_recent_death_notification(notification, new_state, now=None, telegram_message_id=None, error_kind=None, error_summary=None, resolution_note=None):
+    errors = validate_recent_death_notification(notification)
+    if errors:
+        raise ValueError("\n".join(errors))
+    current_state = notification["state"]
+    if new_state not in RECENT_DEATH_NOTIFICATION_ALLOWED_TRANSITIONS[current_state]:
+        raise ValueError("Unsupported recent-death notification transition: {} -> {}".format(current_state, new_state))
+    if new_state == "sent":
+        if not (_is_int_not_bool(telegram_message_id) and telegram_message_id > 0):
+            raise ValueError("sent recent-death notifications require a positive telegram_message_id")
+        if error_kind is not None or error_summary is not None:
+            raise ValueError("sent recent-death notifications must not retain an unresolved error")
+    elif new_state in ("failed", "unknown"):
+        if error_kind not in RECENT_DEATH_NOTIFICATION_ERROR_KINDS:
+            raise ValueError("{} recent-death notifications require a supported error_kind".format(new_state))
+    elif new_state == "cancelled" and not (isinstance(resolution_note, str) and resolution_note.strip()):
+        raise ValueError("cancelled recent-death notifications require a resolution_note")
+    if error_summary is not None:
+        error_summary = sanitize_posting_attempt_error_summary(error_summary)
+    if resolution_note is not None:
+        resolution_note = sanitize_posting_attempt_resolution_note(resolution_note)
+    updated = deepcopy(notification)
+    updated["state"] = new_state
+    updated["state_changed_at"] = _utc_timestamp_text(now)
+    if new_state == "sent":
+        updated.update(telegram_message_id=telegram_message_id, error_kind=None, error_summary=None)
+    elif new_state in ("failed", "unknown"):
+        updated.update(telegram_message_id=None, error_kind=error_kind, error_summary=error_summary)
+    if resolution_note is not None:
+        updated["resolution_note"] = resolution_note
+    errors = validate_recent_death_notification(updated)
     if errors:
         raise ValueError("\n".join(errors))
     return updated
@@ -1151,6 +1328,27 @@ def validate_database_entry(entry: dict) -> List[str]:
                         errors.append(
                             "posting.has_been_posted must be true when an attempt is sent"
                         )
+
+    # Notification history is additive. Historical records without the field
+    # remain valid and read as an empty history.
+    if "recent_death_notifications" in entry:
+        notifications = entry["recent_death_notifications"]
+        if not isinstance(notifications, list):
+            errors.append("recent_death_notifications must be a list when present")
+        else:
+            seen_notification_ids = set()
+            for index, notification in enumerate(notifications):
+                for notification_error in validate_recent_death_notification(notification):
+                    errors.append("recent_death_notifications[{}]: {}".format(index, notification_error))
+                if isinstance(notification, dict):
+                    if notification.get("title") != entry["title"]:
+                        errors.append("recent_death_notifications[{}].title must match entry.title".format(index))
+                    notification_id = notification.get("notification_id")
+                    if isinstance(notification_id, str):
+                        if notification_id in seen_notification_ids:
+                            errors.append("recent_death_notifications notification_id values must be unique")
+                        else:
+                            seen_notification_ids.add(notification_id)
 
     return errors
 

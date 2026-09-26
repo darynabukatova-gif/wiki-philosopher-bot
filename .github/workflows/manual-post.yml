@@ -15,7 +15,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: wiki-philosopher-posting
+  group: wiki-philosopher-authoritative-data
   cancel-in-progress: false
 
 jobs:

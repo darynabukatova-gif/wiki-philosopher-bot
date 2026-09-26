@@ -6,6 +6,7 @@ import pytest
 
 import wiki_philosopher_bot.cli.check_recent_deaths as check_recent_deaths
 import wiki_philosopher_bot.wikipedia_api as wikipedia_api
+import wiki_philosopher_bot.recent_death_outbox as recent_death_outbox
 from wiki_philosopher_bot.database_schema import make_empty_database_entry, serialize_database_entries
 from wiki_philosopher_bot.telegram_bot import TelegramResult
 
@@ -69,10 +70,6 @@ def test_dry_run_has_no_network_or_canonical_write_and_saves_report(monkeypatch,
         check_recent_deaths, "get_wikidata_entities_batch",
         lambda *args, **kwargs: pytest.fail("dry-run must not fetch"),
     )
-    monkeypatch.setattr(
-        check_recent_deaths, "send_message_to_chat",
-        lambda *args: pytest.fail("dry-run must not notify"),
-    )
 
     assert check_recent_deaths.main([
         "--data-folder", str(tmp_path), "--dry-run", "--limit", "1",
@@ -127,11 +124,10 @@ def test_recent_exact_death_updates_only_dates_alerts_and_becomes_ineligible(mon
     assert database["Ervin"]["wikidata"]["death_date"] == "2026-06-29"
     for section in ("summary", "evaluation", "quotes", "posting", "migration"):
         assert database["Ervin"][section] == preserved[section]
-    assert results["recent_death_updates"] == [{
-        "title": "Ervin", "death_date": "2026-06-29",
-        "old_death_year": None, "old_death_date": None,
-        "new_death_year": 2026, "new_death_date": "2026-06-29",
-    }]
+    assert len(results["recent_death_updates"]) == 1
+    notification = database["Ervin"]["recent_death_notifications"][0]
+    assert notification["state"] == "pending"
+    assert notification["death_date"] == "2026-06-29"
     assert not check_recent_deaths.recent_death_monitor_needs_processing(database["Ervin"])
 
 
@@ -221,7 +217,7 @@ def test_failures_preserve_state_and_value_error_propagates(monkeypatch, tmp_pat
     assert check_recent_deaths.recent_death_monitor_needs_processing(database["Alpha"])
 
     monkeypatch.setattr(
-        check_recent_deaths, "update_entry_death",
+        check_recent_deaths, "record_recent_death_discovery",
         lambda *args: (_ for _ in ()).throw(ValueError("invalid")),
     )
     monkeypatch.setattr(
@@ -230,11 +226,11 @@ def test_failures_preserve_state_and_value_error_propagates(monkeypatch, tmp_pat
             {"Q1": entity_with_death(time_claim("+2026-06-29T00:00:00Z"))}, None,
         ),
     )
-    with pytest.raises(ValueError, match="invalid"):
-        check_recent_deaths.run_apply(database, ["Alpha"], str(tmp_path), limiter=object())
+    failed = check_recent_deaths.run_apply(database, ["Alpha"], str(tmp_path), limiter=object())
+    assert failed["operational_failures"] == 1
 
     monkeypatch.setattr(
-        check_recent_deaths, "update_entry_death",
+        check_recent_deaths, "record_recent_death_discovery",
         lambda *args: (_ for _ in ()).throw(KeyboardInterrupt()),
     )
     with pytest.raises(KeyboardInterrupt):
@@ -246,14 +242,14 @@ def test_persistence_oserror_preserves_failed_title_and_continues(monkeypatch, t
     zulu = monitored_entry("Zulu", qid="Q2")
     database = {"Alpha": alpha, "Zulu": zulu}
     write_database(tmp_path, [alpha, zulu])
-    original = check_recent_deaths.update_entry_death
+    original = check_recent_deaths.record_recent_death_discovery
 
     def update_with_failure(database_value, title, *args):
         if title == "Alpha":
             raise OSError("disk full")
         return original(database_value, title, *args)
 
-    monkeypatch.setattr(check_recent_deaths, "update_entry_death", update_with_failure)
+    monkeypatch.setattr(check_recent_deaths, "record_recent_death_discovery", update_with_failure)
     monkeypatch.setattr(
         check_recent_deaths, "get_wikidata_entities_batch",
         lambda *args, **kwargs: wikipedia_api.BatchLookupResult({
@@ -300,156 +296,41 @@ def test_report_order_and_report_write_failure_does_not_rollback(monkeypatch, tm
     assert list(report)[-1] == "title_details"
 
 
-def recent_update(title="Ervin László", death_date="2026-06-29"):
-    return {
-        "title": title,
-        "death_date": death_date,
-        "old_death_year": None,
-        "old_death_date": None,
-        "new_death_year": 2026,
-        "new_death_date": death_date,
-    }
 
-
-def test_notification_skips_zero_updates_without_calling_sender():
-    assert check_recent_deaths.notify_recent_deaths(
-        [], sender=lambda *args: pytest.fail("must not send"),
-    ) == {"attempted": False, "sent": False, "error": None}
-
-
-def test_notification_sends_one_combined_html_escaped_private_message(monkeypatch):
-    sent = []
-    monkeypatch.setattr(
-        check_recent_deaths,
-        "get_recent_death_telegram_settings",
-        lambda: ("https://private.example/send", "private-chat"),
-    )
-
-    def sender(text, url, chat_id):
-        sent.append((text, url, chat_id))
-        return TelegramResult(True, {}, None)
-
-    notification = check_recent_deaths.notify_recent_deaths([
-        recent_update("Ervin <László>"),
-        recent_update("Person & Two", "2026-08-14"),
-    ], sender=sender)
-
-    assert notification == {"attempted": True, "sent": True, "error": None}
-    assert sent == [(
-        "<b>Recent philosopher death updates</b>\n\n"
-        "Ervin &lt;László&gt; — 29 June 2026\n"
-        "Person &amp; Two — 14 August 2026",
-        "https://private.example/send", "private-chat",
-    )]
-
-
-def test_notification_missing_private_chat_is_nonfatal(monkeypatch):
-    monkeypatch.setattr(
-        check_recent_deaths,
-        "get_recent_death_telegram_settings",
-        lambda: ("https://token.example/send", None),
-    )
-
-    assert check_recent_deaths.notify_recent_deaths(
-        [recent_update()], sender=lambda *args: pytest.fail("must not send"),
-    ) == {
-        "attempted": False,
-        "sent": False,
-        "error": "private chat not configured",
-    } 
-
-
-def test_missing_private_chat_keeps_successful_monitoring_update(monkeypatch, tmp_path):
+def test_prepare_never_uses_telegram_or_combined_notification(monkeypatch, tmp_path):
     entry = monitored_entry("Ervin")
     database = {"Ervin": entry}
     write_database(tmp_path, [entry])
-    monkeypatch.setattr(check_recent_deaths, "load_database", lambda *args: database)
-    monkeypatch.setattr(
-        check_recent_deaths, "RECENT_DEATH_REPORTS_DIRECTORY", tmp_path / "reports/recent-deaths",
-    )
-    monkeypatch.setattr(
-        check_recent_deaths, "get_recent_death_telegram_settings",
-        lambda: ("https://private.example/send", None),
-    )
-    monkeypatch.setattr(
-        check_recent_deaths, "get_wikidata_entities_batch",
-        lambda *args, **kwargs: wikipedia_api.BatchLookupResult(
-            {"Q1": entity_with_death(time_claim("+2026-06-29T00:00:00Z"))}, None,
-        ),
-    )
-
-    assert check_recent_deaths.main(["--data-folder", str(tmp_path), "--apply"]) == 0
-    assert database["Ervin"]["wikidata"]["death_date"] == "2026-06-29"
-    report = json.loads(next((tmp_path / "reports/recent-deaths").glob("*.json")).read_text())
-    assert report["notification"] == {
-        "attempted": False,
-        "sent": False,
-        "error": "private chat not configured",
-    }
+    monkeypatch.setattr(check_recent_deaths, "get_wikidata_entities_batch", lambda *args, **kwargs: wikipedia_api.BatchLookupResult({"Q1": entity_with_death(time_claim("+2026-06-29T00:00:00Z"))}, None))
+    monkeypatch.setattr(recent_death_outbox, "send_message_to_chat", lambda *args, **kwargs: pytest.fail("prepare must not notify"))
+    check_recent_deaths.run_apply(database, ["Ervin"], str(tmp_path), limiter=object(), today=date(2026, 8, 21))
+    assert database["Ervin"]["recent_death_notifications"][0]["state"] == "pending"
 
 
-def test_telegram_failure_is_reported_without_undoing_persisted_death(
-    monkeypatch, tmp_path,
-):
-    entry = monitored_entry("Ervin")
-    database = {"Ervin": entry}
+def test_recent_days_is_configurable(monkeypatch, tmp_path):
+    entry = monitored_entry("Window")
+    database = {"Window": entry}
     write_database(tmp_path, [entry])
-    monkeypatch.setattr(check_recent_deaths, "load_database", lambda *args: database)
-    monkeypatch.setattr(
-        check_recent_deaths, "RECENT_DEATH_REPORTS_DIRECTORY", tmp_path / "reports/recent-deaths",
-    )
-    monkeypatch.setattr(
-        check_recent_deaths, "get_recent_death_telegram_settings",
-        lambda: ("https://private.example/send", "private-chat"),
-    )
-    monkeypatch.setattr(
-        check_recent_deaths, "send_message_to_chat",
-        lambda *args: TelegramResult(False, None, "http_error"),
-    )
-    monkeypatch.setattr(
-        check_recent_deaths, "get_wikidata_entities_batch",
-        lambda *args, **kwargs: wikipedia_api.BatchLookupResult(
-            {"Q1": entity_with_death(time_claim("+2026-06-29T00:00:00Z"))}, None,
-        ),
-    )
-
-    assert check_recent_deaths.main(["--data-folder", str(tmp_path), "--apply"]) == 0
-    assert database["Ervin"]["wikidata"]["death_date"] == "2026-06-29"
-    report_path = next((tmp_path / "reports/recent-deaths").glob("*.json"))
-    report = json.loads(report_path.read_text(encoding="utf-8"))
-    assert report["notification"] == {
-        "attempted": True, "sent": False, "error": "http_error",
-    }
+    monkeypatch.setattr(check_recent_deaths, "get_wikidata_entities_batch", lambda *args, **kwargs: wikipedia_api.BatchLookupResult({"Q1": entity_with_death(time_claim("+2025-09-01T00:00:00Z"))}, None))
+    short = check_recent_deaths.run_apply(database, ["Window"], str(tmp_path), limiter=object(), today=date(2026, 8, 21), recent_days=30)
+    assert short["historical_deaths"] == 1
+    assert "recent_death_notifications" not in database["Window"]
 
 
-def test_duplicate_alert_is_prevented_by_canonical_death_year(monkeypatch, tmp_path):
-    entry = monitored_entry("Ervin")
-    database = {"Ervin": entry}
-    write_database(tmp_path, [entry])
-    monkeypatch.setattr(
-        check_recent_deaths, "get_wikidata_entities_batch",
-        lambda *args, **kwargs: wikipedia_api.BatchLookupResult(
-            {"Q1": entity_with_death(time_claim("+2026-06-29T00:00:00Z"))}, None,
-        ),
+def test_prepare_report_exposes_only_newly_created_notification_ids(tmp_path):
+    report = check_recent_deaths.build_apply_report(
+        {"Ada": monitored_entry("Ada")}, 1, ["Ada"], None,
+        {
+            "successfully_checked": 1, "no_death_found": 0, "newly_deceased": 1,
+            "recent_deaths": 1, "historical_deaths": 0, "imprecise_deaths": 0,
+            "suspicious_future_deaths": 0, "operational_failures": 0, "errors": [],
+            "pending_notifications": 1, "already_notified": 0,
+            "blocked_existing_notification": 0, "correction_review_required": 0,
+            "recent_death_updates": [{"title": "Ada", "death_date": "2026-06-29", "notification_id": "new-id"}],
+            "title_details": [],
+        },
     )
-    calls = []
-    monkeypatch.setattr(
-        check_recent_deaths,
-        "get_recent_death_telegram_settings",
-        lambda: ("https://private.example/send", "private-chat"),
-    )
-
-    first = check_recent_deaths.run_apply(
-        database, ["Ervin"], str(tmp_path), limiter=object(), today=date(2026, 8, 21),
-    )
-    check_recent_deaths.notify_recent_deaths(
-        first["recent_death_updates"],
-        sender=lambda *args: calls.append(args) or TelegramResult(True, {}, None),
-    )
-    assert check_recent_deaths.select_eligible_titles(database) == []
-    second = check_recent_deaths.run_apply(database, [], str(tmp_path), limiter=object())
-    check_recent_deaths.notify_recent_deaths(
-        second["recent_death_updates"],
-        sender=lambda *args: pytest.fail("must not send twice"),
-    )
-    assert len(calls) == 1
+    assert report["new_notification_ids"] == ["new-id"]
+    destination = tmp_path / "result.json"
+    check_recent_deaths.write_result_json(report, destination)
+    assert json.loads(destination.read_text(encoding="utf-8"))["new_notification_ids"] == ["new-id"]

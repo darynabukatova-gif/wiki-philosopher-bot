@@ -17,6 +17,8 @@ from wiki_philosopher_bot.database_schema import (
     validate_database_entry,
     validate_posting_attempt,
     transition_posting_attempt,
+    validate_recent_death_notification,
+    transition_recent_death_notification,
 )
 from wiki_philosopher_bot.utils import get_data_path
 from wiki_philosopher_bot.config import DATABASE_BACKUP_FOLDER, OPERATIONAL_BACKUP_RETENTION_DAYS
@@ -612,6 +614,78 @@ def transition_database_posting_attempt(
         data_folder,
         persistence_lock,
     )
+
+
+def append_recent_death_notification(
+    database, title, notification, filename, data_folder, persistence_lock,
+):
+    """Atomically append one validated recent-death notification event."""
+    if title not in database:
+        raise KeyError("Cannot append recent-death notification for missing title: {}".format(title))
+    errors = validate_recent_death_notification(notification)
+    if errors:
+        raise ValueError("\n".join(errors))
+    if notification.get("title") != title:
+        raise ValueError("recent-death notification title must match canonical title")
+
+    def append(candidate):
+        notifications = candidate.setdefault("recent_death_notifications", [])
+        if any(item.get("notification_id") == notification["notification_id"] for item in notifications):
+            raise ValueError("Duplicate recent-death notification ID for title: {}".format(title))
+        if any(item.get("death_date") == notification["death_date"] for item in notifications):
+            raise ValueError("A recent-death notification already exists for this death date")
+        notifications.append(copy.deepcopy(notification))
+
+    return update_database_entry(database, title, append, filename, data_folder, persistence_lock)
+
+
+def record_recent_death_discovery(
+    database, title, death_year, death_date, notification, filename, data_folder, persistence_lock,
+):
+    """Persist death facts and an actionable pending event in one rewrite."""
+    if title not in database:
+        raise KeyError("Cannot record death discovery for missing title: {}".format(title))
+    errors = validate_recent_death_notification(notification)
+    if errors:
+        raise ValueError("\n".join(errors))
+    if notification.get("title") != title or notification.get("death_date") != death_date:
+        raise ValueError("recent-death notification must match the discovered canonical death")
+
+    def record(candidate):
+        wikidata = candidate["wikidata"]
+        wikidata["death_year"] = death_year
+        wikidata["death_date"] = death_date
+        notifications = candidate.setdefault("recent_death_notifications", [])
+        if any(item.get("notification_id") == notification["notification_id"] for item in notifications):
+            raise ValueError("Duplicate recent-death notification ID for title: {}".format(title))
+        if any(item.get("death_date") == death_date for item in notifications):
+            raise ValueError("A recent-death notification already exists for this death date")
+        notifications.append(copy.deepcopy(notification))
+
+    return update_database_entry(database, title, record, filename, data_folder, persistence_lock)
+
+
+def transition_database_recent_death_notification(
+    database, title, notification_id, new_state, filename, data_folder, persistence_lock,
+    now=None, telegram_message_id=None, error_kind=None, error_summary=None,
+    resolution_note=None,
+):
+    """Atomically transition one exact recent-death event without posting state."""
+    if title not in database:
+        raise KeyError("Cannot transition recent-death notification for missing title: {}".format(title))
+
+    def transition(candidate):
+        notifications = candidate.get("recent_death_notifications", [])
+        index = next((i for i, item in enumerate(notifications) if item.get("notification_id") == notification_id), None)
+        if index is None:
+            raise KeyError("Unknown recent-death notification ID for title: {}".format(title))
+        notifications[index] = transition_recent_death_notification(
+            notifications[index], new_state, now=now,
+            telegram_message_id=telegram_message_id, error_kind=error_kind,
+            error_summary=error_summary, resolution_note=resolution_note,
+        )
+
+    return update_database_entry(database, title, transition, filename, data_folder, persistence_lock)
 
 
 def _backup_database_unlocked(filename, data_folder, backup_path):

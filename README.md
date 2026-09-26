@@ -137,6 +137,23 @@ canonical state by default; inspect the JSON output and reconcile it, or use
 pass `--private-data-repo PATH` when the private checkout is not the default
 sibling directory.
 
+### Manual recent-death monitoring
+
+Recent-death notification deployment is currently **manual-only**. It uses the
+same private authoritative data repository as philosopher posting, but it is a
+separate workflow: **Actions → Manual recent-death monitor → Run workflow**.
+Leave both inputs blank for the normal scan, optionally set `recent_days` to a
+positive window override (the default is 365), or provide one exact canonical
+title for supervised investigation.
+
+The workflow first discovers death facts and stores any new notification as a
+pending exact payload, pushes that database checkpoint, then dispatches only
+notification IDs created by that same workflow run. Historical or imprecise
+fact updates are checkpointed without a Telegram notification. `pending`,
+`failed`, and `unknown` events require explicit reconciliation; never blindly
+rerun a workflow after an ambiguous failure. Daily scheduling is intentionally
+not enabled until supervised production validation is complete.
+
 ### Posting-attempt reconciliation
 
 Posting attempts are deliberately never resent automatically after an
@@ -195,6 +212,30 @@ The installed console commands are:
     --apply-project-gutenberg-report reports/external-links/REVIEWED.json
   ```
 - `wiki-philosopher-check-recent-deaths`
+
+  Recent-death discovery is a durable prepare step: `--apply` can query
+  Wikidata and atomically store a discovered death fact plus one exact pending
+  private-notification event, but it never contacts Telegram. It uses a
+  configurable 365-day exact-date window (`--recent-days N`). After the
+  pending database has reached its authoritative checkpoint, dispatch one
+  explicitly identified event:
+
+  ```bash
+  wiki-philosopher-dispatch-recent-death --notification-id ID \
+    --confirm-pending-dispatch
+  ```
+
+  A pending state is not evidence that Telegram was never contacted; do not
+  blindly retry it. Inspect or explicitly resolve it without sending Telegram:
+
+  ```bash
+  wiki-philosopher-reconcile-recent-death show --notification-id ID
+  wiki-philosopher-reconcile-recent-death mark-sent --notification-id ID \
+    --telegram-message-id ID --note "verified privately"
+  wiki-philosopher-reconcile-recent-death cancel --notification-id ID \
+    --note "dispatch did not occur"
+  ```
+
 - `wiki-philosopher-reevaluate`
 - `wiki-philosopher-purge-rejected-quotes`
 - `wiki-philosopher-prepare-post`
