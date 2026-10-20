@@ -2,6 +2,7 @@ import copy
 import hashlib
 import json
 from collections import Counter
+from datetime import date, timedelta
 from statistics import median
 
 import pytest
@@ -353,6 +354,46 @@ def test_short_interval_uses_months_and_individual_ages(tmp_path):
     ages = manifest["assets"][2]
     assert ages["ages"] == [83, 94, 95, 97]
     assert ages["titles"] == ["B", "C", "D", "E"]
+
+
+def test_individual_age_metadata_is_sorted_by_age_then_title(tmp_path):
+    source = tmp_path / "age-order.json"
+    rows = [
+        row("Person C", "2025-10-21", 95),
+        row("Person A", "2025-11-01", 83),
+        row("Person D", "2026-01-01", 97),
+        row("Person B", "2026-02-01", 94),
+        row("Person A2", "2026-03-01", 83),
+    ]
+    write_interval_report(source, rows, "2025-10-01", "2026-09-30")
+    manifest, _ = render_historical_death_report(source, output_directory=tmp_path / "assets")
+    ages = next(asset for asset in manifest["assets"] if asset["kind"] == "individual-ages")
+    assert ages["ages"] == [83, 83, 94, 95, 97]
+    assert ages["titles"] == ["Person A", "Person A2", "Person B", "Person C", "Person D"]
+
+
+def test_short_summary_and_table_pages_have_compact_deterministic_heights(tmp_path):
+    def render(rows, name):
+        source = tmp_path / (name + ".json")
+        write_interval_report(source, rows, "2025-10-01", "2026-09-30")
+        return render_historical_death_report(source, output_directory=tmp_path / (name + "-assets"))[0]
+
+    summary_heights = []
+    table_heights = []
+    for count in (1, 5, 22):
+        rows = [
+            row("Person {:02d}".format(index), (date(2025, 10, 1) + timedelta(days=index)).isoformat(), 70 + index)
+            for index in range(count)
+        ]
+        manifest = render(rows, "count-{}".format(count))
+        summary = next(asset for asset in manifest["assets"] if asset["kind"] == "interval-summary")
+        table = next(asset for asset in manifest["assets"] if asset["kind"] == "deaths-table")
+        summary_heights.append(summary["height"])
+        table_heights.append(table["height"])
+        assert summary["width"] > 0 and summary["height"] > 0
+        assert table["width"] > 0 and table["height"] > 0
+    assert summary_heights[0] < 820
+    assert table_heights[0] < table_heights[1] < table_heights[2]
 
 
 def test_short_interval_boundary_at_two_completed_calendar_years_uses_years(tmp_path):

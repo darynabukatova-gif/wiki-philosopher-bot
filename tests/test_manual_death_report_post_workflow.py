@@ -23,19 +23,21 @@ def test_workflow_is_manual_only_and_requires_explicit_send_confirmation():
     assert "preset:" in text and "default: 1_year" in text
     for option in ("1_year", "3_years", "5_years", "7_years", "10_years", "calendar_year"):
         assert f"          - {option}" in text
-    assert "from_date:" in text
-    assert "to_date:" in text
+    assert "end_month:" in text
+    assert "from_month:" in text
+    assert "to_month:" in text
+    assert "from_date:" not in text
+    assert "to_date:" not in text
     assert "calendar_year:" in text
     assert "rows_per_page:" in text and "default: '22'" in text
     assert "confirm_send:" in text and "default: false" in text
     assert text.index("Validate and resolve interval") < text.index("name: Freeze one pending")
     assert 'if [[ "${CONFIRM_SEND}" != "true" ]]; then' in text
-    assert 'allowed = {"1_year": 1, "3_years": 3, "5_years": 5, "7_years": 7, "10_years": 10, "calendar_year": None}' in text
-    assert "custom mode requires both from_date and to_date" in text
-    assert "custom from_date must not be after to_date" in text
-    assert "calendar_year must be a positive four-digit year" in text
+    assert "PRESET_MONTHS" in text or "resolve_month_interval" in text
+    assert "from_month" in text and "to_month" in text
     assert "must be a positive integer" in text
-    assert "to_date must be a valid YYYY-MM-DD date" in text
+    assert "PYTHONPATH=src python" in text
+    assert "resolve_month_interval" in text
 
 
 def test_workflow_uses_private_database_for_explicit_temp_report_and_render_paths():
@@ -50,9 +52,8 @@ def test_workflow_uses_private_database_for_explicit_temp_report_and_render_path
     assert 'assets_dir="${RUNNER_TEMP}/death-report-assets"' in text
     assert "wiki-philosopher-death-report" in text
     assert "wiki-philosopher-render-death-report" in text
-    assert "report_args=(--data-folder data --json \"${report_path}\")" in text
-    assert 'report_args+=(--last-years "${LAST_YEARS}" --to "${RESOLVED_TO}")' in text
-    assert 'report_args+=(--from "${RESOLVED_FROM}" --to "${RESOLVED_TO}")' in text
+    assert "--last-years" not in text
+    assert 'report_args=(--data-folder data --json "${report_path}" --from "${RESOLVED_FROM}" --to "${RESOLVED_TO}")' in text
     assert "Record resolved report interval" in text
     assert "--output-dir \"${assets_dir}\" --rows-per-page \"${ROWS_PER_PAGE}\"" in text
     assert "refresh-wikidata" not in text
@@ -138,13 +139,11 @@ def test_interval_presets_and_custom_validation_are_resolved_before_reporting():
     validation = text[text.index("id: interval"):text.index("name: Require private data")]
     report = text[text.index("id: report"):text.index("id: render")]
 
-    assert "report_mode=last-years" in validation
-    assert "report_mode=explicit" in validation
-    assert "resolved_from={}-01-01" in validation
-    assert "resolved_to={}-12-31" in validation
-    assert "--last-years \"${LAST_YEARS}\" --to \"${RESOLVED_TO}\"" in report
+    assert "resolve_month_interval" in validation
+    assert "resolved_from={}" in validation
+    assert "resolved_to={}" in validation
     assert "--from \"${RESOLVED_FROM}\" --to \"${RESOLVED_TO}\"" in report
-    assert validation.index("confirm_send must be explicitly enabled") < validation.index("RUN_DATE=")
+    assert validation.index("confirm_send must be explicitly enabled") < validation.index("resolve_month_interval")
     assert text.index("id: interval") < text.index("name: Check out authoritative private data repository")
 
 

@@ -181,12 +181,16 @@ Historical statistical posts are also **manual-only**: open **Actions → Manual
 philosopher death report → Run workflow**. The default interval is the
 `preset` mode's `1_year` choice. Other calendar-year presets are `3_years`,
 `5_years`, `7_years`, `10_years`, and `calendar_year` (a complete January
-through December interval). Presets use calendar arithmetic, not a fixed number
-of days. For arbitrary ranges choose `custom` and provide both inclusive
-`from_date` and `to_date`. Choose `rows_per_page` and explicitly enable
-`confirm_send`; without that confirmation the workflow fails before it creates
-a report-post attempt. The renderer refuses intervals that would require more
-than ten Telegram media items, so longer intervals may need a narrower range.
+through December interval). Presentation presets cover complete calendar
+months, not fixed day counts: a blank `end_month` means the most recently
+completed month in Europe/Dublin. For custom ranges choose `custom` and provide
+both inclusive `from_month` and `to_month`; the workflow expands those months
+to their first/last dates. The general death-report CLI still supports
+arbitrary exact-date intervals for research and debugging. Choose
+`rows_per_page` and explicitly enable `confirm_send`; without that confirmation
+the workflow fails before it creates a report-post attempt. The renderer
+refuses intervals that would require more than ten Telegram media items, so
+longer ranges may need a narrower month interval.
 
 The workflow reads `database.jsonl` from the private authoritative repository,
 generates a read-only report and PNG assets in runner-temporary storage, then

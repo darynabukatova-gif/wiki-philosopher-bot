@@ -23,13 +23,18 @@ on:
           - 7_years
           - 10_years
           - calendar_year
-      from_date:
-        description: 'Custom inclusive start date YYYY-MM-DD'
+      end_month:
+        description: 'Completed end month YYYY-MM (blank uses the previous Dublin calendar month)'
         required: false
         default: ''
         type: string
-      to_date:
-        description: 'Preset end date or custom inclusive end date YYYY-MM-DD'
+      from_month:
+        description: 'Custom inclusive start month YYYY-MM'
+        required: false
+        default: ''
+        type: string
+      to_month:
+        description: 'Custom inclusive end month YYYY-MM'
         required: false
         default: ''
         type: string
@@ -69,8 +74,9 @@ jobs:
         env:
           INTERVAL_MODE: ${{ inputs.interval_mode }}
           PRESET: ${{ inputs.preset }}
-          FROM_DATE: ${{ inputs.from_date }}
-          TO_DATE: ${{ inputs.to_date }}
+          END_MONTH: ${{ inputs.end_month }}
+          FROM_MONTH: ${{ inputs.from_month }}
+          TO_MONTH: ${{ inputs.to_month }}
           CALENDAR_YEAR: ${{ inputs.calendar_year }}
           ROWS_PER_PAGE: ${{ inputs.rows_per_page }}
           CONFIRM_SEND: ${{ inputs.confirm_send }}
@@ -80,67 +86,27 @@ jobs:
             echo "::error::confirm_send must be explicitly enabled before a pending report-post attempt can be created."
             exit 1
           fi
-          RUN_DATE="$(TZ=Europe/Dublin date +%F)"
-          INTERVAL_MODE="${INTERVAL_MODE}" PRESET="${PRESET}" FROM_DATE="${FROM_DATE}" TO_DATE="${TO_DATE}" CALENDAR_YEAR="${CALENDAR_YEAR}" RUN_DATE="${RUN_DATE}" ROWS_PER_PAGE="${ROWS_PER_PAGE}" python - <<'PY' >> "${GITHUB_OUTPUT}"
+          INTERVAL_MODE="${INTERVAL_MODE}" PRESET="${PRESET}" END_MONTH="${END_MONTH}" FROM_MONTH="${FROM_MONTH}" TO_MONTH="${TO_MONTH}" CALENDAR_YEAR="${CALENDAR_YEAR}" ROWS_PER_PAGE="${ROWS_PER_PAGE}" PYTHONPATH=src python - <<'PY' >> "${GITHUB_OUTPUT}"
           import os
-          from datetime import date
+          from wiki_philosopher_bot.report_intervals import resolve_month_interval
 
-          mode = os.environ["INTERVAL_MODE"]
-          preset = os.environ["PRESET"]
-          from_text = os.environ["FROM_DATE"]
-          to_text = os.environ["TO_DATE"]
-          year_text = os.environ["CALENDAR_YEAR"]
-          run_date = date.fromisoformat(os.environ["RUN_DATE"])
-          if mode not in ("preset", "custom"):
-              raise SystemExit("INTERVAL_MODE must be preset or custom")
-          allowed = {"1_year": 1, "3_years": 3, "5_years": 5, "7_years": 7, "10_years": 10, "calendar_year": None}
-          if mode == "custom":
-              if not from_text or not to_text:
-                  raise SystemExit("custom mode requires both from_date and to_date")
-              try:
-                  start, end = date.fromisoformat(from_text), date.fromisoformat(to_text)
-              except ValueError as error:
-                  raise SystemExit("custom from_date and to_date must be valid YYYY-MM-DD dates") from error
-              if start > end:
-                  raise SystemExit("custom from_date must not be after to_date")
-              if year_text:
-                  raise SystemExit("calendar_year is only valid with preset=calendar_year")
-              print("report_mode=explicit")
-              print("resolved_from={}".format(start))
-              print("resolved_to={}".format(end))
-          else:
-              if from_text:
-                  raise SystemExit("from_date is only valid in custom mode")
-              if preset not in allowed:
-                  raise SystemExit("unsupported preset")
-              if preset == "calendar_year":
-                  if to_text:
-                      raise SystemExit("to_date is not used with preset=calendar_year")
-                  if year_text:
-                      if len(year_text) != 4 or not year_text.isdigit() or int(year_text) <= 0:
-                          raise SystemExit("calendar_year must be a positive four-digit year")
-                      year = int(year_text)
-                  else:
-                      year = run_date.year
-                  print("report_mode=explicit")
-                  print("resolved_from={}-01-01".format(year))
-                  print("resolved_to={}-12-31".format(year))
-              else:
-                  if year_text:
-                      raise SystemExit("calendar_year is only valid with preset=calendar_year")
-                  end = run_date
-                  if to_text:
-                      try:
-                          end = date.fromisoformat(to_text)
-                      except ValueError as error:
-                          raise SystemExit("to_date must be a valid YYYY-MM-DD date") from error
-                  print("report_mode=last-years")
-                  print("resolved_from=")
-                  print("resolved_to={}".format(end))
-                  print("last_years={}".format(allowed[preset]))
-              print("resolved_preset={}".format(preset))
-          print("interval_mode={}".format(mode))
-          print("run_date={}".format(run_date))
+          try:
+              resolved = resolve_month_interval(
+                  mode=os.environ["INTERVAL_MODE"],
+                  preset=os.environ["PRESET"],
+                  end_month=os.environ["END_MONTH"],
+                  from_month=os.environ["FROM_MONTH"],
+                  to_month=os.environ["TO_MONTH"],
+                  calendar_year=os.environ["CALENDAR_YEAR"],
+              )
+          except ValueError as error:
+              raise SystemExit(str(error)) from error
+          print("resolved_from={}".format(resolved["from"]))
+          print("resolved_to={}".format(resolved["to"]))
+          print("resolved_end_month={}".format(resolved.get("end_month", resolved.get("to_month", ""))))
+          print("resolved_calendar_year={}".format(resolved.get("calendar_year", "")))
+          print("interval_mode={}".format(resolved["mode"]))
+          print("resolved_preset={}".format(resolved.get("preset", "")))
 
           try:
               rows = int(os.environ["ROWS_PER_PAGE"])
@@ -214,22 +180,12 @@ jobs:
       - id: report
         name: Generate read-only historical death report from authoritative data
         env:
-          REPORT_MODE: ${{ steps.interval.outputs.report_mode }}
-          LAST_YEARS: ${{ steps.interval.outputs.last_years }}
           RESOLVED_FROM: ${{ steps.interval.outputs.resolved_from }}
           RESOLVED_TO: ${{ steps.interval.outputs.resolved_to }}
         run: |
           set -euo pipefail
           report_path="${RUNNER_TEMP}/historical-death-report.json"
-          report_args=(--data-folder data --json "${report_path}")
-          if [[ "${REPORT_MODE}" == "last-years" ]]; then
-            report_args+=(--last-years "${LAST_YEARS}" --to "${RESOLVED_TO}")
-          elif [[ "${REPORT_MODE}" == "explicit" ]]; then
-            report_args+=(--from "${RESOLVED_FROM}" --to "${RESOLVED_TO}")
-          else
-            echo "::error::Unknown resolved report mode: ${REPORT_MODE}"
-            exit 1
-          fi
+          report_args=(--data-folder data --json "${report_path}" --from "${RESOLVED_FROM}" --to "${RESOLVED_TO}")
           wiki-philosopher-death-report "${report_args[@]}"
           test -s "${report_path}"
           REPORT_PATH="${report_path}" python - <<'PY'
@@ -251,6 +207,9 @@ jobs:
         env:
           INTERVAL_MODE: ${{ steps.interval.outputs.interval_mode }}
           PRESET: ${{ steps.interval.outputs.resolved_preset }}
+          END_MONTH: ${{ steps.interval.outputs.resolved_end_month }}
+          FROM_MONTH: ${{ inputs.from_month }}
+          TO_MONTH: ${{ inputs.to_month }}
           REPORT_PATH: ${{ steps.report.outputs.report_path }}
         run: |
           set -euo pipefail
@@ -264,6 +223,10 @@ jobs:
           print("- Mode: {}".format(os.environ["INTERVAL_MODE"]))
           if os.environ["INTERVAL_MODE"] == "preset":
               print("- Preset: {}".format(os.environ["PRESET"]))
+              if os.environ["END_MONTH"]:
+                  print("- End month: {}".format(os.environ["END_MONTH"]))
+          elif os.environ["FROM_MONTH"] and os.environ["TO_MONTH"]:
+              print("- Months: {} through {}".format(os.environ["FROM_MONTH"], os.environ["TO_MONTH"]))
           print("- Resolved interval: {} through {} (inclusive)".format(interval["from"], interval["to"]))
           PY
 

@@ -297,8 +297,10 @@ def _interval_text(inputs):
 
 
 def _render_interval_summary(pyplot, inputs, destination):
-    figure = pyplot.figure(figsize=(10, 7.2))
-    axes = figure.add_axes((0.07, 0.06, 0.86, 0.88))
+    # Keep the established width/type scale while avoiding a mostly empty
+    # canvas for this compact interval-only card.
+    figure = pyplot.figure(figsize=(10, 4.6))
+    axes = figure.add_axes((0.07, 0.08, 0.86, 0.84))
     axes.axis("off")
     statistics = inputs["age_statistics"]
     exact = len(inputs["rows"])
@@ -508,7 +510,15 @@ def _render_age_at_death(pyplot, inputs, destination):
 
 
 def _render_individual_ages(pyplot, inputs, destination):
-    rows = [row for row in inputs["rows"] if row["age_at_death"] is not None]
+    rows = sorted(
+        (row for row in inputs["rows"] if row["age_at_death"] is not None),
+        key=lambda row: (
+            row["age_at_death"],
+            (row.get("display_title") or row["title"]).casefold(),
+            row["title"],
+            row["death_date"],
+        ),
+    )
     ages = [row["age_at_death"] for row in rows]
     labels = [row["display_title"] for row in rows]
     figure_height = max(4.5, 1.2 + len(rows) * 0.48)
@@ -520,6 +530,7 @@ def _render_individual_ages(pyplot, inputs, destination):
             axes.scatter(ages, positions, color="#6c4675", s=55, zorder=3)
             axes.set_yticks(positions)
             axes.set_yticklabels(labels)
+            axes.invert_yaxis()
             axes.set_xlabel("Age at death (completed calendar years)")
             axes.set_ylabel("Philosopher")
             axes.grid(axis="x", alpha=0.2)
@@ -555,7 +566,7 @@ def _render_table_page(pyplot, inputs, rows, destination, page, total_pages):
     wrapped = [(_wrapped_title(row["display_title"]), row) for row in rows]
     row_units = [max(1, len(lines)) for lines, _ in wrapped]
     total_units = max(1, sum(row_units))
-    figure_height = max(6.5, 2.0 + total_units * 0.42)
+    figure_height = max(3.8, 2.0 + total_units * 0.42)
     figure = pyplot.figure(figsize=(11.5, figure_height))
     axes = figure.add_axes((0.035, 0.035, 0.93, 0.93))
     axes.set_xlim(0, 1)
