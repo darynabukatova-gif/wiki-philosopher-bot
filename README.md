@@ -60,6 +60,18 @@ Do not commit `.env`.
 
 ## Running
 
+### Publish a reviewed private preview to the channel
+
+The manual **Publish private preview to channel** Actions workflow publishes an
+already-sent private statistical report or recent-death preview. Choose the
+source type and optionally provide its exact source UUID; leaving it blank
+selects the latest eligible unpublished preview. Explicit confirmation is
+required. The pending channel-publication bundle is pushed to the private data
+repository before Telegram is contacted, and the terminal state is pushed
+afterward. If delivery is unknown or a post-send checkpoint fails, do not
+blindly rerun the workflow; inspect and reconcile it with
+`wiki-philosopher-reconcile-channel-publication`.
+
 The package entry point does not post by default. The legacy one-process flow
 is intentionally explicit because it has no external persistence checkpoint:
 

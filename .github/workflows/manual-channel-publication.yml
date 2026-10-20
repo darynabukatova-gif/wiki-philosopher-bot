@@ -1,0 +1,259 @@
+name: Publish private preview to channel
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_type:
+        description: 'Private preview type to publish'
+        required: true
+        type: choice
+        options:
+          - statistical_report
+          - recent_death
+      source_id:
+        description: 'Optional source UUID; blank selects the latest unpublished eligible preview'
+        required: false
+        default: ''
+        type: string
+      confirm_publish:
+        description: 'Confirm that this reviewed private preview may be published to the channel'
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wiki-philosopher-authoritative-data
+  cancel-in-progress: false
+
+jobs:
+  publish-channel:
+    name: Prepare, checkpoint, and publish one private preview
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source repository
+        uses: actions/checkout@v7
+
+      - name: Validate publication confirmation and source ID before mutation
+        env:
+          SOURCE_TYPE: ${{ inputs.source_type }}
+          SOURCE_ID: ${{ inputs.source_id }}
+          CONFIRM_PUBLISH: ${{ inputs.confirm_publish }}
+        run: |
+          set -euo pipefail
+          if [[ "${CONFIRM_PUBLISH}" != "true" ]]; then
+            echo "::error::confirm_publish must be enabled before channel-publication state can be created."
+            exit 1
+          fi
+          case "${SOURCE_TYPE}" in
+            statistical_report|recent_death) ;;
+            *) echo "::error::Unsupported source type."; exit 1 ;;
+          esac
+          if [[ -n "${SOURCE_ID}" ]] && [[ ! "${SOURCE_ID}" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$ ]]; then
+            echo "::error::source_id must be a UUID when supplied."
+            exit 1
+          fi
+
+      - name: Require private data repository configuration
+        env:
+          DATA_REPOSITORY: ${{ vars.DATA_REPOSITORY }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${DATA_REPOSITORY}" || ! "${DATA_REPOSITORY}" =~ ^[^/[:space:]]+/[^/[:space:]]+$ ]]; then
+            echo "::error::DATA_REPOSITORY must be configured as owner/repository."
+            exit 1
+          fi
+
+      - name: Check out authoritative private data repository
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ vars.DATA_REPOSITORY }}
+          token: ${{ secrets.DATA_REPO_TOKEN }}
+          path: private-data
+          fetch-depth: 1
+          persist-credentials: true
+
+      - name: Verify authoritative private checkout is clean and current
+        run: |
+          set -euo pipefail
+          if [[ -n "$(git -C private-data status --porcelain --untracked-files=all)" ]]; then
+            echo "::error::Private data checkout is unexpectedly dirty."
+            exit 1
+          fi
+          git -C private-data fetch origin main
+          if [[ "$(git -C private-data rev-parse HEAD)" != "$(git -C private-data rev-parse origin/main)" ]]; then
+            echo "::error::Private data checkout is not exactly current with origin/main."
+            exit 1
+          fi
+          git -C private-data config user.name "github-actions[bot]"
+          git -C private-data config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+
+      - name: Install application
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install .
+
+      - id: prepare
+        name: Prepare one pending channel publication without Telegram
+        env:
+          SOURCE_TYPE: ${{ inputs.source_type }}
+          SOURCE_ID: ${{ inputs.source_id }}
+          PRIVATE_DATA: ${{ github.workspace }}/private-data
+        run: |
+          set -euo pipefail
+          result_path="${RUNNER_TEMP}/prepare-channel-publication.json"
+          args=(--source-type "${SOURCE_TYPE}" --state-root "${PRIVATE_DATA}/channel-publications" --result-json "${result_path}")
+          if [[ -n "${SOURCE_ID}" ]]; then args+=(--source-id "${SOURCE_ID}"); fi
+          if [[ "${SOURCE_TYPE}" == "statistical_report" ]]; then
+            args+=(--report-post-root "${PRIVATE_DATA}/report-posts")
+          else
+            args+=(--database "${PRIVATE_DATA}/database.jsonl")
+          fi
+          wiki-philosopher-prepare-channel-publication "${args[@]}"
+          RESULT_PATH="${result_path}" SOURCE_TYPE="${SOURCE_TYPE}" PRIVATE_DATA="${PRIVATE_DATA}" python - <<'PY' >> "${GITHUB_OUTPUT}"
+          import json, os
+          from pathlib import Path
+          result = json.loads(Path(os.environ["RESULT_PATH"]).read_text(encoding="utf-8"))
+          if result.get("ok") is not True or result.get("operation") != "prepare-channel-publication":
+              raise SystemExit("Channel publication preparation failed: {}".format(result.get("error_summary", "unknown error")))
+          if result.get("ending_state") != "pending" or result.get("telegram_called") is not False:
+              raise SystemExit("Prepare did not create a Telegram-free pending publication.")
+          if result.get("source_type") != os.environ["SOURCE_TYPE"] or not result.get("publication_id") or not result.get("source_id"):
+              raise SystemExit("Prepare result has inconsistent source identity.")
+          expected_kind = "media_group" if os.environ["SOURCE_TYPE"] == "statistical_report" else "text"
+          if result.get("payload_kind") != expected_kind:
+              raise SystemExit("Prepare result has an unexpected payload kind.")
+          publication_id = result["publication_id"]
+          attempt_path = Path(os.environ["PRIVATE_DATA"]) / "channel-publications" / publication_id / "attempt.json"
+          attempt = json.loads(attempt_path.read_text(encoding="utf-8"))
+          if attempt.get("state") != "pending": raise SystemExit("Prepared attempt is not pending.")
+          print("publication_id={}".format(publication_id))
+          print("source_id={}".format(result["source_id"]))
+          print("payload_kind={}".format(result["payload_kind"]))
+          print("prepare_result={}".format(os.environ["RESULT_PATH"]))
+          PY
+
+      - name: Record prepared publication
+        env:
+          PUBLICATION_ID: ${{ steps.prepare.outputs.publication_id }}
+          SOURCE_TYPE: ${{ inputs.source_type }}
+          SOURCE_ID: ${{ steps.prepare.outputs.source_id }}
+          PAYLOAD_KIND: ${{ steps.prepare.outputs.payload_kind }}
+        run: |
+          set -euo pipefail
+          echo "Prepared channel publication ${PUBLICATION_ID} (${SOURCE_TYPE}, source ${SOURCE_ID})."
+          {
+            echo "## Channel publication"
+            echo
+            printf 'Prepared publication: `%s`\n' "${PUBLICATION_ID}"
+            printf 'Source: `%s` (%s)\n' "${SOURCE_ID}" "${SOURCE_TYPE}"
+            printf 'Payload: `%s`\n' "${PAYLOAD_KIND}"
+            echo "Pending bundle must be pushed before Telegram dispatch."
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - id: pending_checkpoint
+        name: Commit and push pending channel-publication bundle before Telegram
+        env:
+          PUBLICATION_ID: ${{ steps.prepare.outputs.publication_id }}
+        run: |
+          set -euo pipefail
+          bundle="channel-publications/${PUBLICATION_ID}"
+          git -C private-data add -f -- "${bundle}"
+          staged="$(git -C private-data diff --cached --name-only)"
+          if [[ -z "${staged}" ]]; then echo "::error::No pending publication bundle was staged."; exit 1; fi
+          while IFS= read -r path; do
+            case "${path}" in
+              "${bundle}"/*) ;;
+              *) echo "::error::Refusing unrelated staged path: ${path}"; exit 1 ;;
+            esac
+          done <<< "${staged}"
+          if grep -Fxq "database.jsonl" <<< "${staged}" || grep -q '^report-posts/' <<< "${staged}"; then
+            echo "::error::database.jsonl and report-posts must never be staged by this workflow."; exit 1
+          fi
+          git -C private-data commit -m "Prepare channel publication ${PUBLICATION_ID}"
+          git -C private-data push origin HEAD
+          if [[ -n "$(git -C private-data status --porcelain --untracked-files=all)" ]]; then echo "::error::Private checkout is not clean after pending checkpoint."; exit 1; fi
+          echo "checkpointed=true" >> "${GITHUB_OUTPUT}"
+
+      - id: dispatch
+        name: Dispatch exactly the checkpointed publication once
+        if: ${{ steps.pending_checkpoint.outputs.checkpointed == 'true' }}
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          CHANNEL_TELEGRAM_CHAT_ID: ${{ secrets.CHANNEL_TELEGRAM_CHAT_ID }}
+          PUBLICATION_ID: ${{ steps.prepare.outputs.publication_id }}
+          PRIVATE_DATA: ${{ github.workspace }}/private-data
+        run: |
+          set -euo pipefail
+          result_path="${RUNNER_TEMP}/dispatch-channel-publication.json"
+          set +e
+          wiki-philosopher-dispatch-channel-publication --publication-id "${PUBLICATION_ID}" --state-root "${PRIVATE_DATA}/channel-publications" --confirm-pending-dispatch --result-json "${result_path}"
+          dispatch_status=$?
+          set -e
+          RESULT_PATH="${result_path}" PUBLICATION_ID="${PUBLICATION_ID}" DISPATCH_STATUS="${dispatch_status}" python - <<'PY' >> "${GITHUB_OUTPUT}"
+          import json, os
+          from pathlib import Path
+          result=json.loads(Path(os.environ["RESULT_PATH"]).read_text(encoding="utf-8"))
+          if result.get("operation") != "dispatch-channel-publication" or result.get("publication_id") != os.environ["PUBLICATION_ID"]:
+              raise SystemExit("Dispatch result did not identify the checkpointed publication.")
+          persisted=result.get("persistence_succeeded") is True
+          ending=result.get("ending_state") or ""
+          if persisted and ending not in ("sent", "failed", "unknown"): raise SystemExit("Persisted dispatch state is not terminal.")
+          print("persistence_succeeded={}".format("true" if persisted else "false"))
+          print("ending_state={}".format(ending))
+          print("dispatch_status={}".format(os.environ["DISPATCH_STATUS"]))
+          PY
+
+      - id: terminal_checkpoint
+        name: Commit and push terminal channel-publication state
+        if: ${{ always() && steps.dispatch.outputs.persistence_succeeded == 'true' }}
+        env:
+          PUBLICATION_ID: ${{ steps.prepare.outputs.publication_id }}
+        run: |
+          set -euo pipefail
+          attempt="channel-publications/${PUBLICATION_ID}/attempt.json"
+          git -C private-data add -f -- "${attempt}"
+          staged="$(git -C private-data diff --cached --name-only)"
+          if [[ "${staged}" != "${attempt}" ]]; then echo "::error::Terminal checkpoint may stage only ${attempt}."; exit 1; fi
+          if git -C private-data diff --cached --quiet; then echo "::error::Terminal state did not change."; exit 1; fi
+          git -C private-data commit -m "Finalize channel publication ${PUBLICATION_ID}"
+          if ! git -C private-data push origin HEAD; then
+            echo "::error::Terminal push failed after Telegram may have been contacted. DO NOT rerun; manual channel-publication reconciliation is required for ${PUBLICATION_ID}."
+            exit 1
+          fi
+
+      - name: Fail safely when terminal state was not persisted
+        if: ${{ always() && steps.dispatch.outputs.persistence_succeeded != 'true' && steps.dispatch.outcome != 'skipped' }}
+        env:
+          PUBLICATION_ID: ${{ steps.prepare.outputs.publication_id }}
+        run: |
+          echo "::error::Channel publication ${PUBLICATION_ID} may have contacted Telegram but terminal state was not persisted. DO NOT rerun; manual reconciliation is required."
+          exit 1
+
+      - name: Fail after checkpointed failed or unknown publication
+        if: ${{ always() && steps.terminal_checkpoint.outcome == 'success' && steps.dispatch.outputs.dispatch_status != '0' }}
+        env:
+          PUBLICATION_ID: ${{ steps.prepare.outputs.publication_id }}
+          ENDING_STATE: ${{ steps.dispatch.outputs.ending_state }}
+        run: |
+          echo "::error::Channel publication ${PUBLICATION_ID} reached checkpointed ${ENDING_STATE}. Do not retry automatically; reconcile deliberately."
+          exit 1
+
+      - name: Upload non-secret publication diagnostics
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: channel-publication-results
+          path: |
+            ${{ runner.temp }}/prepare-channel-publication.json
+            ${{ runner.temp }}/dispatch-channel-publication.json
+          if-no-files-found: ignore
+          retention-days: 7
