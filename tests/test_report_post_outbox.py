@@ -5,6 +5,9 @@ from statistics import median
 import pytest
 from wiki_philosopher_bot.death_report_rendering import (
     render_historical_death_report, validate_historical_death_report,
+    INTERVAL_SUMMARY_KIND, DEATHS_BY_MONTH_KIND, DEATHS_BY_YEAR_KIND,
+    MEDIAN_AGE_BY_YEAR_KIND, INDIVIDUAL_AGES_KIND, AGE_AT_DEATH_KIND,
+    DEATHS_TABLE_KIND,
 )
 from wiki_philosopher_bot.report_post_outbox import (
     content_fingerprint, dispatch_report_post, load_attempt, prepare_report_post,
@@ -37,6 +40,74 @@ def test_prepare_freezes_complete_bundle_without_changing_sources(rendered):
     assert '<b>Philosopher deaths: 2019-09-26–2026-09-26</b>' in attempt['caption_html']
     assert source.read_bytes()==before[0] and manifest.read_bytes()==before[1]
     assert verify_bundle(bundle,attempt) and set(x.name for x in bundle.iterdir())=={'attempt.json','source-report.json','render-manifest.json',*[x['filename'] for x in attempt['media']]}
+
+
+def test_actual_renderer_short_adaptive_manifest_prepares_in_canonical_order(tmp_path):
+    """Regression for Phase 8E's short-report renderer -> outbox contract."""
+    value = report([
+        row("One", "2025-10-20", None),
+        row("Two", "2026-01-10", 83),
+        row("Three", "2026-02-03", 94),
+        row("Five", "2026-06-01", 95),
+        row("Four", "2026-10-20", 97),
+    ])
+    value["interval"] = {
+        "from": "2025-10-20", "to": "2026-10-20",
+        "inclusive": True, "source": "explicit",
+    }
+    source = tmp_path / "short-report.json"
+    source.write_text(json.dumps(value) + "\n")
+    manifest_path = render_historical_death_report(
+        source, output_directory=tmp_path / "assets", rows_per_page=22
+    )[1]
+
+    manifest = json.loads(manifest_path.read_text())
+    assert [asset["kind"] for asset in manifest["assets"]] == [
+        INTERVAL_SUMMARY_KIND, DEATHS_BY_MONTH_KIND,
+        INDIVIDUAL_AGES_KIND, DEATHS_TABLE_KIND,
+    ]
+    assert [asset["filename"] for asset in manifest["assets"]] == [
+        "interval-summary.png", "deaths-by-month.png",
+        "individual-ages.png", "deaths-table-001.png",
+    ]
+
+    result = prepare_report_post(source, manifest_path, tmp_path / "state")
+    assert result.ok
+    attempt = load_attempt(tmp_path / "state" / result.attempt_id)
+    assert attempt["state"] == "pending"
+    assert [asset["kind"] for asset in attempt["media"]] == [
+        INTERVAL_SUMMARY_KIND, DEATHS_BY_MONTH_KIND,
+        INDIVIDUAL_AGES_KIND, DEATHS_TABLE_KIND,
+    ]
+
+
+def test_actual_renderer_multi_year_adaptive_manifest_prepares_in_canonical_order(tmp_path):
+    """The long adaptive layout remains compatible with report-post validation."""
+    rows = [
+        row("A", "2019-10-01", 70), row("B", "2020-02-01", 71),
+        row("C", "2020-08-01", 72), row("D", "2021-03-01", 73),
+        row("E", "2021-09-01", 74), row("F", "2022-04-01", 75),
+        row("G", "2023-05-01", 76), row("H", "2024-06-01", 77),
+    ]
+    value = report(rows)
+    source = tmp_path / "long-report.json"
+    source.write_text(json.dumps(value) + "\n")
+    manifest_path = render_historical_death_report(
+        source, output_directory=tmp_path / "assets", rows_per_page=22
+    )[1]
+    manifest = json.loads(manifest_path.read_text())
+    assert [asset["kind"] for asset in manifest["assets"]] == [
+        INTERVAL_SUMMARY_KIND, DEATHS_BY_YEAR_KIND,
+        MEDIAN_AGE_BY_YEAR_KIND, AGE_AT_DEATH_KIND, DEATHS_TABLE_KIND,
+    ]
+    result = prepare_report_post(source, manifest_path, tmp_path / "state")
+    assert result.ok
+    attempt = load_attempt(tmp_path / "state" / result.attempt_id)
+    assert [asset["filename"] for asset in attempt["media"]] == [
+        "interval-summary.png", "deaths-by-year.png",
+        "median-age-by-year.png", "age-at-death.png",
+        "deaths-table-001.png",
+    ]
 
 
 def test_enriched_report_caption_uses_completeness_and_age_extremes(tmp_path):

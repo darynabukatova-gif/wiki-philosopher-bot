@@ -20,6 +20,18 @@ TELEGRAM_MEDIA_GROUP_MAX = 10
 DEFAULT_ROWS_PER_PAGE = 22
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
+# Canonical semantic identifiers used in render manifests and outbox media
+# validation.  The legacy summary-completeness identifier remains supported
+# only when reading previously generated manifests.
+INTERVAL_SUMMARY_KIND = "interval-summary"
+LEGACY_SUMMARY_KIND = "summary-completeness"
+DEATHS_BY_MONTH_KIND = "deaths-by-month"
+DEATHS_BY_YEAR_KIND = "deaths-by-year"
+MEDIAN_AGE_BY_YEAR_KIND = "median-age-by-year"
+INDIVIDUAL_AGES_KIND = "individual-ages"
+AGE_AT_DEATH_KIND = "age-at-death"
+DEATHS_TABLE_KIND = "deaths-table"
+
 
 class DeathReportRenderError(ValueError):
     """Raised when a source report cannot be rendered safely."""
@@ -667,7 +679,7 @@ def render_historical_death_report(
             pyplot, inputs, output_directory / filename,
         )
         pending.append((temporary, output_directory / filename))
-        assets.append(_asset_metadata("interval-summary", filename, temporary, **semantic))
+        assets.append(_asset_metadata(INTERVAL_SUMMARY_KIND, filename, temporary, **semantic))
 
         interval_from = date.fromisoformat(inputs["interval"]["from"])
         interval_to = date.fromisoformat(inputs["interval"]["to"])
@@ -675,11 +687,11 @@ def render_historical_death_report(
         if short_interval:
             filename = "deaths-by-month.png"
             render_frequency = _render_deaths_by_month
-            frequency_kind = "deaths-by-month"
+            frequency_kind = DEATHS_BY_MONTH_KIND
         else:
             filename = "deaths-by-year.png"
             render_frequency = _render_deaths_by_year
-            frequency_kind = "deaths-by-year"
+            frequency_kind = DEATHS_BY_YEAR_KIND
         temporary, semantic = render_frequency(pyplot, inputs, output_directory / filename)
         pending.append((temporary, output_directory / filename))
         assets.append(_asset_metadata(frequency_kind, filename, temporary, **semantic))
@@ -692,16 +704,16 @@ def render_historical_death_report(
             filename = "median-age-by-year.png"
             temporary, semantic = _render_median_age_by_year(pyplot, inputs, output_directory / filename)
             pending.append((temporary, output_directory / filename))
-            assets.append(_asset_metadata("median-age-by-year", filename, temporary, **semantic))
+            assets.append(_asset_metadata(MEDIAN_AGE_BY_YEAR_KIND, filename, temporary, **semantic))
 
         if len(inputs["ages"]) < 8:
             filename = "individual-ages.png"
             temporary, semantic = _render_individual_ages(pyplot, inputs, output_directory / filename)
-            age_kind = "individual-ages"
+            age_kind = INDIVIDUAL_AGES_KIND
         else:
             filename = "age-at-death.png"
             temporary, semantic = _render_age_at_death(pyplot, inputs, output_directory / filename)
-            age_kind = "age-at-death"
+            age_kind = AGE_AT_DEATH_KIND
         pending.append((temporary, output_directory / filename))
         assets.append(_asset_metadata(age_kind, filename, temporary, **semantic))
 
@@ -717,7 +729,7 @@ def render_historical_death_report(
             )
             pending.append((temporary, output_directory / filename))
             assets.append(_asset_metadata(
-                "deaths-table", filename, temporary,
+                DEATHS_TABLE_KIND, filename, temporary,
                 page=page, total_pages=total_pages,
                 row_start=row_start_index + 1 if page_rows else 0,
                 row_end=row_start_index + len(page_rows) if page_rows else 0,

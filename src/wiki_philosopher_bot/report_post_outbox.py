@@ -13,7 +13,13 @@ import requests
 import uuid
 
 from wiki_philosopher_bot.config import TELEGRAM_CAPTION_MAX_LENGTH, TELEGRAM_MEDIA_GROUP_MAX_ITEMS
-from wiki_philosopher_bot.death_report_rendering import validate_historical_death_report, png_dimensions
+from wiki_philosopher_bot.death_report_rendering import (
+    validate_historical_death_report, png_dimensions,
+    INTERVAL_SUMMARY_KIND, LEGACY_SUMMARY_KIND,
+    DEATHS_BY_MONTH_KIND, DEATHS_BY_YEAR_KIND,
+    MEDIAN_AGE_BY_YEAR_KIND, INDIVIDUAL_AGES_KIND,
+    AGE_AT_DEATH_KIND, DEATHS_TABLE_KIND,
+)
 from wiki_philosopher_bot.report_formatting import compact_percentage, mean_age, median_age
 from wiki_philosopher_bot.telegram_bot import (TELEGRAM_OUTCOME_CONFIRMED_SUCCESS,
     TELEGRAM_OUTCOME_DEFINITE_REJECTION, send_media_group_to_chat)
@@ -82,6 +88,51 @@ def _parse_iso_date(value, field):
 def _safe_filename(value):
     return isinstance(value, str) and value and Path(value).name == value and value not in (".", "..")
 
+
+def _validate_media_layout(media):
+    """Require the renderer's canonical adaptive media order.
+
+    New manifests use ``interval-summary`` followed by exactly one frequency
+    chart, an optional median-age chart, one age chart, and contiguous table
+    pages.  The old ``summary-completeness`` identifier is accepted only for
+    previously generated bundles; its layout follows the same ordering.
+    """
+    if not media:
+        raise ReportPostError("media must not be empty")
+    first = media[0].get("kind")
+    if first not in (INTERVAL_SUMMARY_KIND, LEGACY_SUMMARY_KIND):
+        raise ReportPostError("media must begin with an interval summary")
+    table_start = next(
+        (index for index, item in enumerate(media)
+         if item.get("kind") == DEATHS_TABLE_KIND),
+        None,
+    )
+    if table_start is None:
+        raise ReportPostError("media must end with death-table pages")
+    charts = media[1:table_start]
+    frequencies = [item.get("kind") for item in charts
+                    if item.get("kind") in (DEATHS_BY_YEAR_KIND, DEATHS_BY_MONTH_KIND)]
+    ages = [item.get("kind") for item in charts
+            if item.get("kind") in (AGE_AT_DEATH_KIND, INDIVIDUAL_AGES_KIND)]
+    medians = [item.get("kind") for item in charts
+               if item.get("kind") == MEDIAN_AGE_BY_YEAR_KIND]
+    if len(frequencies) != 1:
+        raise ReportPostError("media must contain exactly one death-frequency chart")
+    if len(ages) != 1:
+        raise ReportPostError("media must contain exactly one age chart")
+    if len(medians) > 1:
+        raise ReportPostError("media must contain at most one median-age chart")
+    tables = media[table_start:]
+    if any(item.get("kind") != DEATHS_TABLE_KIND for item in tables):
+        raise ReportPostError("media must end with death-table pages")
+    expected = [first, frequencies[0]] + medians + ages
+    expected.extend([DEATHS_TABLE_KIND] * len(tables))
+    if [item.get("kind") for item in media] != expected:
+        raise ReportPostError("media does not follow the canonical adaptive order")
+    pages = [item.get("page") for item in tables]
+    if pages != list(range(1, len(tables) + 1)):
+        raise ReportPostError("attempt table pages must be contiguous")
+
 def validate_attempt(attempt):
     if not isinstance(attempt, dict) or attempt.get("schema_version") != SCHEMA_VERSION or attempt.get("kind") != KIND:
         raise ReportPostError("unsupported report-post attempt schema")
@@ -110,23 +161,7 @@ def validate_attempt(attempt):
         if not isinstance(item, dict) or item.get("position") != index or not _safe_filename(item.get("filename")) or not _is_sha(item.get("sha256")): raise ReportPostError("invalid ordered media entry")
         if item["filename"] in names: raise ReportPostError("duplicate media filename")
         names.add(item["filename"])
-    if media[0].get("kind") not in ("interval-summary", "summary-completeness"):
-        raise ReportPostError("media must begin with an interval summary")
-    table_start = next((index for index, item in enumerate(media) if item.get("kind") == "deaths-table"), None)
-    if table_start is None:
-        raise ReportPostError("media must end with death-table pages")
-    charts = media[1:table_start]
-    if len([item for item in charts if item.get("kind") in ("deaths-by-year", "deaths-by-month")]) != 1:
-        raise ReportPostError("media must contain exactly one death-frequency chart")
-    if len([item for item in charts if item.get("kind") in ("age-at-death", "individual-ages")]) != 1:
-        raise ReportPostError("media must contain exactly one age chart")
-    if len([item for item in charts if item.get("kind") == "median-age-by-year"]) > 1:
-        raise ReportPostError("media must contain at most one median-age chart")
-    tables = media[table_start:]
-    if not tables or any(item.get("kind") != "deaths-table" for item in tables):
-        raise ReportPostError("media must end with death-table pages")
-    if [item.get("page") for item in tables] != list(range(1, len(tables) + 1)):
-        raise ReportPostError("attempt table pages must be contiguous")
+    _validate_media_layout(media)
     ids = attempt.get("telegram_message_ids")
     if not isinstance(ids, list) or any(not _is_int(x) or x <= 0 for x in ids): raise ReportPostError("invalid Telegram message IDs")
     if state == "sent" and len(ids) != len(media): raise ReportPostError("sent attempt requires a complete message-ID list")
@@ -168,7 +203,7 @@ def _validate_manifest(report_path, manifest_path):
     if manifest.get("interval") != normalized["interval"] or manifest.get("exact_deaths") != len(normalized["rows"]) or manifest.get("exact_ages") != len(normalized["ages"]): raise ReportPostError("manifest summary does not match report")
     assets=manifest.get("assets")
     if not isinstance(assets, list): raise ReportPostError("manifest assets must be a list")
-    base=manifest_path.parent.resolve(); checked=[]; names=set(); charts={"deaths-by-year":0,"deaths-by-month":0,"age-at-death":0,"individual-ages":0,"interval-summary":0,"summary-completeness":0,"median-age-by-year":0}; tables=[]
+    base=manifest_path.parent.resolve(); checked=[]; names=set(); charts={DEATHS_BY_YEAR_KIND:0,DEATHS_BY_MONTH_KIND:0,AGE_AT_DEATH_KIND:0,INDIVIDUAL_AGES_KIND:0,INTERVAL_SUMMARY_KIND:0,LEGACY_SUMMARY_KIND:0,MEDIAN_AGE_BY_YEAR_KIND:0}; tables=[]
     for asset in assets:
         if not isinstance(asset, dict) or not _safe_filename(asset.get("filename")) or not _is_sha(asset.get("sha256")): raise ReportPostError("malformed manifest asset")
         name=asset["filename"]
@@ -183,16 +218,17 @@ def _validate_manifest(report_path, manifest_path):
         if asset.get("width") != width or asset.get("height") != height or asset.get("size_bytes") != len(data): raise ReportPostError("manifest asset metadata mismatch: {}".format(name))
         kind=asset.get("kind")
         if kind in charts: charts[kind]+=1
-        elif kind == "deaths-table": tables.append(asset)
+        elif kind == DEATHS_TABLE_KIND: tables.append(asset)
         else: raise ReportPostError("unsupported manifest asset kind")
         checked.append((asset,path,data))
-    if charts["interval-summary"] + charts["summary-completeness"] != 1: raise ReportPostError("manifest must contain exactly one interval summary")
-    if charts["deaths-by-year"] + charts["deaths-by-month"] != 1: raise ReportPostError("manifest must contain exactly one death-frequency chart")
-    if charts["age-at-death"] + charts["individual-ages"] != 1: raise ReportPostError("manifest must contain exactly one age chart")
+    _validate_media_layout(assets)
+    if charts[INTERVAL_SUMMARY_KIND] + charts[LEGACY_SUMMARY_KIND] != 1: raise ReportPostError("manifest must contain exactly one interval summary")
+    if charts[DEATHS_BY_YEAR_KIND] + charts[DEATHS_BY_MONTH_KIND] != 1: raise ReportPostError("manifest must contain exactly one death-frequency chart")
+    if charts[AGE_AT_DEATH_KIND] + charts[INDIVIDUAL_AGES_KIND] != 1: raise ReportPostError("manifest must contain exactly one age chart")
     if not tables: raise ReportPostError("manifest must contain table pages")
     pages=sorted(asset.get("page") for asset in tables)
     if pages != list(range(1,len(tables)+1)) or any(asset.get("total_pages") != len(tables) for asset in tables): raise ReportPostError("table pages must be contiguous")
-    order={"interval-summary":0,"summary-completeness":0,"deaths-by-year":1,"deaths-by-month":1,"median-age-by-year":2,"age-at-death":3,"individual-ages":3}
+    order={INTERVAL_SUMMARY_KIND:0,LEGACY_SUMMARY_KIND:0,DEATHS_BY_YEAR_KIND:1,DEATHS_BY_MONTH_KIND:1,MEDIAN_AGE_BY_YEAR_KIND:2,AGE_AT_DEATH_KIND:3,INDIVIDUAL_AGES_KIND:3}
     checked.sort(key=lambda row: (order.get(row[0]["kind"],4), row[0].get("page",0)))
     return report, normalized, manifest, report_bytes, manifest_bytes, checked
 
