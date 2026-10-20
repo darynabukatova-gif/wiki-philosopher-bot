@@ -55,6 +55,15 @@ def get_recent_death_telegram_settings():
     return telegram_url, chat_id
 
 
+def get_channel_telegram_settings():
+    """Return the dedicated channel publication destination."""
+    token = os.getenv("TELEGRAM_TOKEN")
+    chat_id = os.getenv("CHANNEL_TELEGRAM_CHAT_ID")
+    media_url = "https://api.telegram.org/bot{}/sendMediaGroup".format(token) if token else None
+    text_url = "https://api.telegram.org/bot{}/sendMessage".format(token) if token else None
+    return text_url, media_url, chat_id
+
+
 def get_wikimedia_user_agent():
     """Return the project user agent, optionally including public contact."""
     contact = os.getenv("WIKIMEDIA_USER_AGENT_CONTACT", "").strip()

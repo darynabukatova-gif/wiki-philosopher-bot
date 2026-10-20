@@ -29,6 +29,13 @@ from wiki_philosopher_bot.database_schema import (
     recent_death_notifications,
     validate_recent_death_notification,
 )
+from wiki_philosopher_bot.config import get_channel_telegram_settings
+from wiki_philosopher_bot.telegram_bot import (
+    TELEGRAM_OUTCOME_CONFIRMED_SUCCESS,
+    TELEGRAM_OUTCOME_DEFINITE_REJECTION,
+    send_message_to_chat,
+    send_media_group_to_chat,
+)
 
 SCHEMA_VERSION = 1
 SOURCE_TYPE = "statistical_report"
@@ -72,6 +79,30 @@ class ChannelPublicationResult:
 
     def as_report(self):
         return self.__dict__.copy()
+
+
+@dataclass(frozen=True)
+class ChannelDispatchResult:
+    ok: bool
+    operation: str = "dispatch-channel-publication"
+    publication_id: Optional[str] = None
+    source_type: Optional[str] = None
+    source_id: Optional[str] = None
+    payload_kind: Optional[str] = None
+    starting_state: Optional[str] = None
+    ending_state: Optional[str] = None
+    telegram_called: bool = False
+    telegram_message_ids: Optional[list] = None
+    persistence_succeeded: bool = False
+    manual_reconciliation_required: bool = False
+    error_kind: Optional[str] = None
+    error_summary: Optional[str] = None
+
+    def as_report(self):
+        value = self.__dict__.copy()
+        if value["telegram_message_ids"] is None:
+            value["telegram_message_ids"] = []
+        return value
 
 
 def _sha_bytes(value: bytes) -> str:
@@ -649,3 +680,141 @@ def prepare_channel_publication(
         source_id=source_id,
         **kwargs,
     )
+
+
+def _save_channel_transition(bundle, attempt, new_state, *, now=None, ids=None,
+                             error_kind=None, error_summary=None, resolution_note=None):
+    if not is_legal_transition(attempt["state"], new_state):
+        raise ChannelPublicationError("transition {} -> {} is not allowed".format(attempt["state"], new_state))
+    changed = dict(attempt)
+    changed["state"] = new_state
+    changed["state_changed_at"] = _timestamp(now)
+    changed["telegram_message_ids"] = list(ids or [])
+    changed["error_kind"] = error_kind
+    changed["error_summary"] = error_summary
+    if resolution_note is not None:
+        changed["resolution_note"] = resolution_note
+    validate_publication(changed)
+    _atomic_json(Path(bundle) / "attempt.json", changed)
+    return changed
+
+
+def _dispatch_outcome(telegram, expected_count):
+    outcome = getattr(telegram, "outcome", None)
+    ids = list(getattr(telegram, "message_ids", None) or [])
+    if not ids and expected_count == 1:
+        message_id = getattr(telegram, "message_id", None)
+        if isinstance(message_id, int) and not isinstance(message_id, bool):
+            ids = [message_id]
+    if outcome == TELEGRAM_OUTCOME_CONFIRMED_SUCCESS and len(ids) == expected_count and all(
+        isinstance(value, int) and not isinstance(value, bool) and value > 0 for value in ids
+    ):
+        return "sent", ids, None, None
+    if outcome == TELEGRAM_OUTCOME_DEFINITE_REJECTION:
+        return "failed", [], "telegram_rejected", "Telegram explicitly rejected the publication"
+    reason = getattr(telegram, "error_reason", None)
+    kind = "response_invalid" if reason in ("invalid_json", "invalid_response") or getattr(telegram, "ok", False) else "transport_ambiguous"
+    return "unknown", [], kind, "Telegram publication delivery could not be established"
+
+
+def dispatch_channel_publication(publication_id, state_root, *, confirmed=False,
+                                 sender_text=None, sender_media=None, settings=None,
+                                 now=None):
+    """Dispatch exactly one frozen channel bundle, with no source lookup."""
+    result_base = dict(publication_id=publication_id, telegram_called=False)
+    if not _valid_uuid(publication_id):
+        return ChannelDispatchResult(False, **result_base, error_kind="validation", error_summary="publication_id must be a canonical UUID")
+    try:
+        attempt, bundle = load_publication(state_root, publication_id)
+    except (OSError, ChannelPublicationError) as error:
+        return ChannelDispatchResult(False, **result_base, error_kind="payload_integrity", error_summary=str(error), manual_reconciliation_required=True)
+    result_base.update(source_type=attempt["source_type"], source_id=attempt["source_id"], payload_kind=attempt["payload_kind"], starting_state=attempt["state"])
+    if not confirmed:
+        return ChannelDispatchResult(False, **result_base, error_kind="confirmation_required", error_summary="explicit pending-dispatch confirmation is required")
+    if attempt["state"] != "pending":
+        return ChannelDispatchResult(False, **result_base, error_kind="invalid_state", error_summary="only a pending publication can be dispatched")
+    try:
+        payload = validate_publication_bundle(bundle, attempt)
+    except (OSError, ChannelPublicationError) as error:
+        return ChannelDispatchResult(False, **result_base, error_kind="payload_integrity", error_summary=str(error), manual_reconciliation_required=True)
+    if settings is None:
+        text_url, media_url, chat_id = get_channel_telegram_settings()
+    else:
+        text_url, media_url, chat_id = settings
+    if not chat_id or not (media_url if attempt["payload_kind"] == PAYLOAD_KIND else text_url):
+        return ChannelDispatchResult(False, **result_base, error_kind="missing_configuration", error_summary="channel Telegram token and chat ID are required")
+    try:
+        if attempt["payload_kind"] == PAYLOAD_KIND:
+            sender = sender_media or send_media_group_to_chat
+            telegram = sender(payload, attempt["caption_html"], media_url, chat_id)
+            expected = len(attempt["media"])
+        else:
+            sender = sender_text or send_message_to_chat
+            telegram = sender(attempt["message_html"], text_url, chat_id)
+            expected = 1
+    except Exception:
+        telegram = type("Ambiguous", (), {"outcome": "ambiguous", "message_ids": None, "error_reason": "request_exception", "ok": False})()
+    state, ids, error_kind, summary = _dispatch_outcome(telegram, expected)
+    result_base["telegram_called"] = True
+    try:
+        _save_channel_transition(bundle, attempt, state, now=now, ids=ids, error_kind=error_kind, error_summary=summary)
+    except (OSError, ChannelPublicationError):
+        return ChannelDispatchResult(False, **result_base, ending_state=attempt["state"], telegram_message_ids=ids,
+                                     persistence_succeeded=False, manual_reconciliation_required=True,
+                                     error_kind="persistence_error", error_summary="Telegram may have accepted the publication but terminal state could not be persisted")
+    return ChannelDispatchResult(state == "sent", **result_base, ending_state=state, telegram_message_ids=ids,
+                                 persistence_succeeded=True, manual_reconciliation_required=state == "unknown",
+                                 error_kind=error_kind, error_summary=summary)
+
+
+def reconcile_channel_publication(publication_id, state_root, operation, *, message_ids=None,
+                                  note=None, confirm_unsafe=False, now=None, show_message=False):
+    if not _valid_uuid(publication_id):
+        return {"ok": False, "operation": operation, "publication_id": publication_id,
+                "error_kind": "validation", "error_summary": "publication_id must be a canonical UUID"}
+    try:
+        attempt, bundle = load_publication(state_root, publication_id)
+    except (OSError, ChannelPublicationError) as error:
+        return {"ok": False, "operation": operation, "publication_id": publication_id,
+                "error_kind": "payload_integrity", "error_summary": str(error)}
+    if operation == "show":
+        result = {"ok": True, "operation": operation, "publication_id": publication_id,
+                  "source_type": attempt["source_type"], "source_id": attempt["source_id"],
+                  "payload_kind": attempt["payload_kind"], "state": attempt["state"],
+                  "state_changed_at": attempt["state_changed_at"], "telegram_message_ids": attempt["telegram_message_ids"],
+                  "error_kind": attempt.get("error_kind"), "error_summary": attempt.get("error_summary"),
+                  "source_payload_fingerprint": attempt["source_payload_fingerprint"],
+                  "publication_fingerprint": attempt["publication_fingerprint"], "media": attempt["media"]}
+        if show_message and attempt["payload_kind"] == TEXT_PAYLOAD_KIND:
+            result["message_html"] = attempt["message_html"]
+        return result
+    if not isinstance(note, str) or not note.strip():
+        return {"ok": False, "operation": operation, "publication_id": publication_id,
+                "error_kind": "validation", "error_summary": "a non-empty note is required"}
+    state = attempt["state"]
+    if operation == "mark-sent":
+        ids = list(message_ids or [])
+        expected = 1 if attempt["payload_kind"] == TEXT_PAYLOAD_KIND else len(attempt["media"])
+        if state not in ("pending", "unknown") or len(ids) != expected or any(not isinstance(i, int) or isinstance(i, bool) or i <= 0 for i in ids):
+            return {"ok": False, "operation": operation, "publication_id": publication_id,
+                    "error_kind": "validation", "error_summary": "mark-sent requires pending/unknown state and complete positive message IDs"}
+        target, ids, error_kind, error_summary = "sent", ids, None, None
+    elif operation == "cancel":
+        if state not in ("pending", "failed", "unknown"):
+            return {"ok": False, "operation": operation, "publication_id": publication_id,
+                    "error_kind": "invalid_state", "error_summary": "only unresolved publications can be cancelled"}
+        if state == "unknown" and not confirm_unsafe:
+            return {"ok": False, "operation": operation, "publication_id": publication_id,
+                    "error_kind": "unsafe_confirmation_required", "error_summary": "cancelling unknown delivery requires --confirm-unsafe"}
+        target, ids, error_kind, error_summary = "cancelled", [], None, None
+    else:
+        return {"ok": False, "operation": operation, "publication_id": publication_id,
+                "error_kind": "invalid_operation", "error_summary": "unsupported reconciliation operation"}
+    try:
+        _save_channel_transition(bundle, attempt, target, now=now, ids=ids, error_kind=error_kind,
+                                 error_summary=error_summary, resolution_note=note)
+    except (OSError, ChannelPublicationError) as error:
+        return {"ok": False, "operation": operation, "publication_id": publication_id,
+                "error_kind": "persistence_error", "error_summary": str(error)}
+    return {"ok": True, "operation": operation, "publication_id": publication_id,
+            "old_state": state, "new_state": target, "telegram_message_ids": ids, "resolution_note": note}

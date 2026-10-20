@@ -21,7 +21,10 @@ from wiki_philosopher_bot.channel_publication_outbox import (
     prepare_channel_publication_from_recent_death,
     discover_sent_recent_death_sources,
     RECENT_DEATH_SOURCE_TYPE,
+    dispatch_channel_publication,
+    reconcile_channel_publication,
 )
+from wiki_philosopher_bot.telegram_bot import TelegramMediaGroupResult, TelegramResult, TELEGRAM_OUTCOME_CONFIRMED_SUCCESS, TELEGRAM_OUTCOME_DEFINITE_REJECTION, TELEGRAM_OUTCOME_AMBIGUOUS
 from wiki_philosopher_bot.death_report_rendering import render_historical_death_report
 from wiki_philosopher_bot.report_post_outbox import (
     load_attempt,
@@ -390,3 +393,71 @@ def test_recent_death_cross_source_identity_does_not_collide(tmp_path):
     recent = _recent_database(tmp_path / "cross-db", [_sent_notification(identifier, datetime(2026, 9, 26, tzinfo=timezone.utc))])
     result = prepare_channel_publication_from_recent_death(recent, state, source_id=identifier)
     assert result.ok
+
+
+def test_dispatch_statistical_media_group_uses_frozen_payload_once(tmp_path):
+    report_root, source_id = _source(tmp_path / "report")
+    state = tmp_path / "state"
+    prepared = prepare_channel_publication_from_report(report_root, state, source_id=source_id)
+    calls = []
+    media_ids = [11, 12, 13, 14]
+    def sender(payload, caption, url, chat):
+        calls.append((payload, caption, url, chat))
+        return TelegramMediaGroupResult(True, {"ok": True}, None, TELEGRAM_OUTCOME_CONFIRMED_SUCCESS, media_ids)
+    result = dispatch_channel_publication(prepared.publication_id, state, confirmed=True, sender_media=sender, settings=("text-url", "media-url", "channel"))
+    assert result.ok and result.ending_state == "sent"
+    assert len(calls) == 1 and calls[0][1].startswith("<b>Philosopher deaths")
+    assert [item["filename"] for item in calls[0][0]] == [item["filename"] for item in load_publication(state, prepared.publication_id)[0]["media"]]
+    assert load_publication(state, prepared.publication_id)[0]["telegram_message_ids"] == media_ids
+
+
+def test_dispatch_recent_text_and_reconciliation(tmp_path):
+    identifier = "92345678-1234-4234-8234-123456789abc"
+    database = _recent_database(tmp_path / "db", [_sent_notification(identifier, datetime(2026, 9, 26, tzinfo=timezone.utc), "<b>Exact frozen text</b>")])
+    state = tmp_path / "state"
+    prepared = prepare_channel_publication_from_recent_death(database, state, source_id=identifier)
+    calls = []
+    def sender(text, url, chat):
+        calls.append((text, url, chat))
+        return TelegramResult(True, {"ok": True}, None, TELEGRAM_OUTCOME_CONFIRMED_SUCCESS, 42)
+    database.unlink()
+    result = dispatch_channel_publication(prepared.publication_id, state, confirmed=True, sender_text=sender, settings=("text-url", "media-url", "channel"))
+    assert result.ok and result.telegram_message_ids == [42]
+    assert calls == [("<b>Exact frozen text</b>", "text-url", "channel")]
+    shown = reconcile_channel_publication(prepared.publication_id, state, "show")
+    assert "message_html" not in shown
+    assert reconcile_channel_publication(prepared.publication_id, state, "show", show_message=True)["message_html"] == "<b>Exact frozen text</b>"
+
+
+def test_dispatch_rejection_unknown_and_confirmation_checks(tmp_path):
+    report_root, source_id = _source(tmp_path / "report")
+    state = tmp_path / "state"
+    prepared = prepare_channel_publication_from_report(report_root, state, source_id=source_id)
+    no_confirm = dispatch_channel_publication(prepared.publication_id, state, settings=("t", "m", "c"))
+    assert not no_confirm.ok and no_confirm.error_kind == "confirmation_required"
+    rejected = dispatch_channel_publication(prepared.publication_id, state, confirmed=True,
+        sender_media=lambda *args: TelegramMediaGroupResult(False, {"ok": False}, "telegram_error", TELEGRAM_OUTCOME_DEFINITE_REJECTION, None), settings=("t", "m", "c"))
+    assert not rejected.ok and rejected.ending_state == "failed"
+
+
+def test_dispatch_integrity_failure_does_not_contact_telegram(tmp_path):
+    report_root, source_id = _source(tmp_path / "report")
+    state = tmp_path / "state"
+    prepared = prepare_channel_publication_from_report(report_root, state, source_id=source_id)
+    media = state / prepared.publication_id / "deaths-by-year.png"
+    media.write_bytes(b"corrupt")
+    calls = []
+    result = dispatch_channel_publication(prepared.publication_id, state, confirmed=True, sender_media=lambda *args: calls.append(args), settings=("t", "m", "c"))
+    assert not result.ok and not result.telegram_called and not calls
+
+
+def test_reconciliation_unknown_requires_unsafe_confirmation(tmp_path):
+    report_root, source_id = _source(tmp_path / "report")
+    state = tmp_path / "state"
+    prepared = prepare_channel_publication_from_report(report_root, state, source_id=source_id)
+    def ambiguous(*args):
+        return TelegramMediaGroupResult(False, None, "request_exception", TELEGRAM_OUTCOME_AMBIGUOUS, None)
+    result = dispatch_channel_publication(prepared.publication_id, state, confirmed=True, sender_media=ambiguous, settings=("t", "m", "c"))
+    assert result.ending_state == "unknown"
+    assert not reconcile_channel_publication(prepared.publication_id, state, "cancel", note="x")["ok"]
+    assert reconcile_channel_publication(prepared.publication_id, state, "cancel", note="x", confirm_unsafe=True)["ok"]
