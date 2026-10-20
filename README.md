@@ -110,6 +110,9 @@ Historical death-report JSON includes additive `data_completeness`,
 `yearly_statistics`, and `age_extremes` sections. Exact-age statistics use only
 exact Gregorian birth and death dates; year-only potential matches are excluded
 from exact death and age statistics.
+The renderer accepts older reports for compatibility, deriving only the
+yearly chart inputs; completeness values unavailable in those reports are shown
+as unavailable rather than inferred.
 
 To prepare a specific philosopher through Actions, first find the exact
 canonical title locally (this is read-only):

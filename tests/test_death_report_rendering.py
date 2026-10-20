@@ -17,6 +17,7 @@ from wiki_philosopher_bot.death_report_rendering import (
     png_dimensions,
     render_historical_death_report,
     validate_historical_death_report,
+    TELEGRAM_MEDIA_GROUP_MAX,
 )
 
 
@@ -91,7 +92,7 @@ def test_valid_report_renders_and_source_is_unchanged(tmp_path):
 
     assert source.read_bytes() == before
     assert manifest["operation"] == "historical-death-report-render"
-    assert manifest["renderer_version"] == 1
+    assert manifest["renderer_version"] == 2
     assert manifest["exact_deaths"] == 2
     assert manifest["exact_ages"] == 1
     assert manifest_path.name == "render-manifest.json"
@@ -175,7 +176,7 @@ def test_single_year_chart_and_empty_interval_render(tmp_path):
         empty, output_directory=tmp_path / "empty-assets",
     )
     assert empty_manifest["exact_deaths"] == 0
-    assert len(empty_manifest["assets"]) == 3
+    assert len(empty_manifest["assets"]) == 5
     table = next(item for item in empty_manifest["assets"] if item["kind"] == "deaths-table")
     assert table["row_count"] == 0
     assert table["row_start"] == 0
@@ -308,9 +309,38 @@ def test_cli_renders_and_prints_concise_summary(tmp_path, capsys):
     ]) == 0
     output = capsys.readouterr().out
     assert "Historical death report rendered" in output
-    assert "Assets: 3" in output
+    assert "Assets: 5" in output
     assert "deaths-by-year.png" in output
     assert (destination / "render-manifest.json").exists()
+
+
+def test_renderer_v2_asset_order_and_median_manifest_metadata(tmp_path):
+    source = tmp_path / "report.json"
+    write_report(source, [row("Alpha", "2024-01-01", 80), row("Beta", "2025-01-01", None)])
+    manifest, _ = render_historical_death_report(source, output_directory=tmp_path / "assets")
+    kinds = [asset["kind"] for asset in manifest["assets"]]
+    assert kinds == ["summary-completeness", "deaths-by-year", "median-age-by-year", "age-at-death", "deaths-table"]
+    median_asset = next(asset for asset in manifest["assets"] if asset["kind"] == "median-age-by-year")
+    assert median_asset["years"] == list(range(2019, 2027))
+    assert median_asset["sample_sizes"][-3:] == [1, 0, 0]
+
+
+def test_renderer_media_group_limit_rejects_without_completed_output(tmp_path):
+    source = tmp_path / "report.json"
+    rows = [row("Person {}".format(index), "2024-01-{:02d}".format((index % 9) + 1), None) for index in range(8)]
+    write_report(source, rows)
+    destination = tmp_path / "too-many-assets"
+    with pytest.raises(DeathReportRenderError, match="maximum supported is 10"):
+        render_historical_death_report(source, output_directory=destination, rows_per_page=1)
+    assert not destination.exists() or not (destination / "render-manifest.json").exists()
+
+
+def test_renderer_media_group_limit_allows_exactly_ten_assets(tmp_path):
+    source = tmp_path / "report.json"
+    rows = [row("Person {}".format(index), "2024-01-{:02d}".format(index + 1), None) for index in range(6)]
+    write_report(source, rows)
+    manifest, _ = render_historical_death_report(source, output_directory=tmp_path / "ten-assets", rows_per_page=1)
+    assert len(manifest["assets"]) == TELEGRAM_MEDIA_GROUP_MAX == 10
 
 
 def test_load_rejects_malformed_json(tmp_path):

@@ -109,9 +109,14 @@ def validate_attempt(attempt):
         if not isinstance(item, dict) or item.get("position") != index or not _safe_filename(item.get("filename")) or not _is_sha(item.get("sha256")): raise ReportPostError("invalid ordered media entry")
         if item["filename"] in names: raise ReportPostError("duplicate media filename")
         names.add(item["filename"])
-    if media[0].get("kind") != "deaths-by-year" or media[1].get("kind") != "age-at-death":
-        raise ReportPostError("media must begin with year and age charts")
-    tables = media[2:]
+    if media[0].get("kind") == "summary-completeness":
+        if len(media) < 4 or media[1].get("kind") != "deaths-by-year" or media[2].get("kind") != "median-age-by-year" or media[3].get("kind") != "age-at-death":
+            raise ReportPostError("renderer v2 media must begin with summary, year, median, and age charts")
+        tables = media[4:]
+    else:
+        if media[0].get("kind") != "deaths-by-year" or media[1].get("kind") != "age-at-death":
+            raise ReportPostError("media must begin with year and age charts")
+        tables = media[2:]
     if not tables or any(item.get("kind") != "deaths-table" for item in tables):
         raise ReportPostError("media must end with death-table pages")
     if [item.get("page") for item in tables] != list(range(1, len(tables) + 1)):
@@ -151,13 +156,13 @@ def _validate_manifest(report_path, manifest_path):
     except (UnicodeDecodeError, json.JSONDecodeError) as error: raise ReportPostError("report or manifest is not valid UTF-8 JSON") from error
     try: normalized=validate_historical_death_report(report)
     except ValueError as error: raise ReportPostError(str(error)) from error
-    if not isinstance(manifest, dict) or manifest.get("operation") != "historical-death-report-render" or manifest.get("renderer_version") != 1: raise ReportPostError("unsupported render manifest")
+    if not isinstance(manifest, dict) or manifest.get("operation") != "historical-death-report-render" or manifest.get("renderer_version") not in (1, 2): raise ReportPostError("unsupported render manifest")
     report_sha=_sha_bytes(report_bytes)
     if manifest.get("source_report_sha256") != report_sha: raise ReportPostError("manifest source report SHA-256 does not match")
     if manifest.get("interval") != normalized["interval"] or manifest.get("exact_deaths") != len(normalized["rows"]) or manifest.get("exact_ages") != len(normalized["ages"]): raise ReportPostError("manifest summary does not match report")
     assets=manifest.get("assets")
     if not isinstance(assets, list): raise ReportPostError("manifest assets must be a list")
-    base=manifest_path.parent.resolve(); checked=[]; names=set(); charts={"deaths-by-year":0,"age-at-death":0}; tables=[]
+    base=manifest_path.parent.resolve(); checked=[]; names=set(); charts={"deaths-by-year":0,"age-at-death":0,"summary-completeness":0,"median-age-by-year":0}; tables=[]
     for asset in assets:
         if not isinstance(asset, dict) or not _safe_filename(asset.get("filename")) or not _is_sha(asset.get("sha256")): raise ReportPostError("malformed manifest asset")
         name=asset["filename"]
@@ -175,12 +180,13 @@ def _validate_manifest(report_path, manifest_path):
         elif kind == "deaths-table": tables.append(asset)
         else: raise ReportPostError("unsupported manifest asset kind")
         checked.append((asset,path,data))
-    if charts != {"deaths-by-year":1,"age-at-death":1}: raise ReportPostError("manifest must contain exactly one year and age chart")
+    if charts["deaths-by-year"] != 1 or charts["age-at-death"] != 1: raise ReportPostError("manifest must contain exactly one year and age chart")
+    if manifest.get("renderer_version") == 2 and (charts["summary-completeness"] != 1 or charts["median-age-by-year"] != 1): raise ReportPostError("renderer v2 manifest must contain summary and median-age charts")
     if not tables: raise ReportPostError("manifest must contain table pages")
     pages=sorted(asset.get("page") for asset in tables)
     if pages != list(range(1,len(tables)+1)) or any(asset.get("total_pages") != len(tables) for asset in tables): raise ReportPostError("table pages must be contiguous")
-    order={"deaths-by-year":0,"age-at-death":1}
-    checked.sort(key=lambda row: (order.get(row[0]["kind"],2), row[0].get("page",0)))
+    order={"summary-completeness":0,"deaths-by-year":1,"median-age-by-year":2,"age-at-death":3}
+    checked.sort(key=lambda row: (order.get(row[0]["kind"],4), row[0].get("page",0)))
     return report, normalized, manifest, report_bytes, manifest_bytes, checked
 
 def _caption(normalized):

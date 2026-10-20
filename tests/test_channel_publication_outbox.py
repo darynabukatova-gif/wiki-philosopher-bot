@@ -400,15 +400,15 @@ def test_dispatch_statistical_media_group_uses_frozen_payload_once(tmp_path):
     state = tmp_path / "state"
     prepared = prepare_channel_publication_from_report(report_root, state, source_id=source_id)
     calls = []
-    media_ids = [11, 12, 13, 14]
+    media_ids = list(range(11, 20))
     def sender(payload, caption, url, chat):
         calls.append((payload, caption, url, chat))
-        return TelegramMediaGroupResult(True, {"ok": True}, None, TELEGRAM_OUTCOME_CONFIRMED_SUCCESS, media_ids)
+        return TelegramMediaGroupResult(True, {"ok": True}, None, TELEGRAM_OUTCOME_CONFIRMED_SUCCESS, list(range(11, 11 + len(payload))))
     result = dispatch_channel_publication(prepared.publication_id, state, confirmed=True, sender_media=sender, settings=("text-url", "media-url", "channel"))
     assert result.ok and result.ending_state == "sent"
     assert len(calls) == 1 and calls[0][1].startswith("<b>Philosopher deaths")
     assert [item["filename"] for item in calls[0][0]] == [item["filename"] for item in load_publication(state, prepared.publication_id)[0]["media"]]
-    assert load_publication(state, prepared.publication_id)[0]["telegram_message_ids"] == media_ids
+    assert load_publication(state, prepared.publication_id)[0]["telegram_message_ids"] == list(range(11, 11 + len(calls[0][0])))
 
 
 def test_dispatch_recent_text_and_reconciliation(tmp_path):

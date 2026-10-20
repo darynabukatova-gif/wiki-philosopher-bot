@@ -32,8 +32,8 @@ def test_prepare_freezes_complete_bundle_without_changing_sources(rendered):
     source,manifest,state=rendered; before=(source.read_bytes(),manifest.read_bytes())
     result=prepare_report_post(source,manifest,state,attempt_id='12345678-1234-4234-8234-123456789abc')
     assert result.ok and result.ending_state=='pending'; bundle=state/result.attempt_id; attempt=load_attempt(bundle)
-    assert [x['kind'] for x in attempt['media']]==['deaths-by-year','age-at-death','deaths-table','deaths-table']
-    assert [x['position'] for x in attempt['media']]==[1,2,3,4]
+    assert [x['kind'] for x in attempt['media']]==['summary-completeness','deaths-by-year','median-age-by-year','age-at-death','deaths-table','deaths-table']
+    assert [x['position'] for x in attempt['media']]==list(range(1, len(attempt['media']) + 1))
     assert '<b>Philosopher deaths: 2019-09-26–2026-09-26</b>' in attempt['caption_html']
     assert source.read_bytes()==before[0] and manifest.read_bytes()==before[1]
     assert verify_bundle(bundle,attempt) and set(x.name for x in bundle.iterdir())=={'attempt.json','source-report.json','render-manifest.json',*[x['filename'] for x in attempt['media']]}
@@ -141,9 +141,9 @@ def test_atomic_prepare_failure_leaves_no_visible_attempt(rendered):
 
 def test_dispatch_uses_frozen_payload_once_and_success_persists(rendered):
     result,state=prepared(rendered); calls=[]
-    def sender(media,caption,url,chat): calls.append((media,caption,url,chat)); return TelegramMediaGroupResult(True,{},None,TELEGRAM_OUTCOME_CONFIRMED_SUCCESS,[11,12,13,14])
+    def sender(media,caption,url,chat): calls.append((media,caption,url,chat)); return TelegramMediaGroupResult(True,{},None,TELEGRAM_OUTCOME_CONFIRMED_SUCCESS,list(range(11, 11 + len(media))))
     dispatched=dispatch_report_post(result.attempt_id,state,'url','chat',confirmed=True,sender=sender)
-    assert dispatched.ok and dispatched.ending_state=='sent' and dispatched.telegram_message_ids==[11,12,13,14] and len(calls)==1
+    assert dispatched.ok and dispatched.ending_state=='sent' and dispatched.telegram_message_ids==list(range(11, 11 + len(calls[0][0]))) and len(calls)==1
     assert [x['filename'] for x in calls[0][0]]==[x['filename'] for x in load_attempt(state/result.attempt_id)['media']]
     assert not dispatch_report_post(result.attempt_id,state,'url','chat',confirmed=True,sender=lambda *x: pytest.fail('no resend')).ok
 
@@ -197,7 +197,7 @@ def test_dispatch_uses_only_relocated_frozen_bundle_after_original_inputs_remove
         calls.append((media, caption, url, chat))
         return TelegramMediaGroupResult(
             True, {}, None, TELEGRAM_OUTCOME_CONFIRMED_SUCCESS,
-            [31, 32, 33, 34],
+            list(range(31, 31 + len(media))),
         )
 
     dispatched = dispatch_report_post(

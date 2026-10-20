@@ -12,7 +12,8 @@ from datetime import date
 from pathlib import Path
 from statistics import median
 
-RENDERER_VERSION = 1
+RENDERER_VERSION = 2
+TELEGRAM_MEDIA_GROUP_MAX = 10
 DEFAULT_ROWS_PER_PAGE = 22
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
@@ -155,6 +156,43 @@ def validate_historical_death_report(report):
                     "age_statistics.{} must be null without exact ages".format(field)
                 )
 
+    yearly = report.get("yearly_statistics")
+    if yearly is None:
+        yearly = []
+        for year in range(interval_from.year, interval_to.year + 1):
+            year_rows = [row for row in normalized_rows if int(row["death_date"][:4]) == year]
+            year_ages = [row["age_at_death"] for row in year_rows if row["age_at_death"] is not None]
+            yearly.append({
+                "year": year, "exact_deaths": len(year_rows),
+                "exact_ages_available": len(year_ages),
+                "mean_age": sum(year_ages) / len(year_ages) if year_ages else None,
+                "median_age": median(year_ages) if year_ages else None,
+                "min_age": min(year_ages) if year_ages else None,
+                "max_age": max(year_ages) if year_ages else None,
+            })
+    if not isinstance(yearly, list):
+        raise DeathReportRenderError("yearly_statistics must be a list")
+    normalized_yearly = []
+    for item in yearly:
+        if not isinstance(item, dict) or not _is_int(item.get("year")):
+            raise DeathReportRenderError("yearly_statistics entries must contain integer years")
+        values = {key: item.get(key) for key in ("exact_deaths", "exact_ages_available")}
+        if any(not _is_int(value) or value < 0 for value in values.values()):
+            raise DeathReportRenderError("yearly_statistics counts must be non-negative integers")
+        for key in ("mean_age", "median_age", "min_age", "max_age"):
+            value = item.get(key)
+            if value is not None and (not isinstance(value, (int, float)) or isinstance(value, bool)):
+                raise DeathReportRenderError("yearly_statistics ages must be numeric or null")
+        normalized_yearly.append({"year": item["year"], **values, **{key: item.get(key) for key in ("mean_age", "median_age", "min_age", "max_age")}})
+    if [item["year"] for item in normalized_yearly] != sorted(item["year"] for item in normalized_yearly):
+        raise DeathReportRenderError("yearly_statistics must be chronological")
+    data_completeness = report.get("data_completeness")
+    age_extremes = report.get("age_extremes")
+    if data_completeness is not None and not isinstance(data_completeness, dict):
+        raise DeathReportRenderError("data_completeness must be an object")
+    if age_extremes is not None and not isinstance(age_extremes, dict):
+        raise DeathReportRenderError("age_extremes must be an object")
+
     return {
         "interval": {
             "from": interval_from.isoformat(),
@@ -173,6 +211,9 @@ def validate_historical_death_report(report):
                 "median", "minimum", "maximum",
             )
         },
+        "data_completeness": data_completeness or {},
+        "yearly_statistics": normalized_yearly,
+        "age_extremes": age_extremes or {"youngest": None, "oldest": None},
     }
 
 
@@ -238,6 +279,84 @@ def _sha256(path):
 def _interval_text(inputs):
     interval = inputs["interval"]
     return "{} through {} (inclusive)".format(interval["from"], interval["to"])
+
+
+def _format_number(value):
+    if value is None:
+        return "—"
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return "{:.2f}".format(value).rstrip("0").rstrip(".") if isinstance(value, float) else str(value)
+
+
+def _render_summary_completeness(pyplot, inputs, destination):
+    figure = pyplot.figure(figsize=(10, 7.2))
+    axes = figure.add_axes((0.07, 0.06, 0.86, 0.88))
+    axes.axis("off")
+    completeness = inputs.get("data_completeness", {})
+    statistics = inputs["age_statistics"]
+    exact = completeness.get("exact_deaths_in_interval", len(inputs["rows"]))
+    ages = completeness.get("exact_deaths_with_exact_age", len(inputs["ages"]))
+    total = completeness.get("semantic_philosophers_total")
+    age_denominator = exact or 0
+    age_pct = completeness.get("exact_age_coverage_for_interval_pct")
+    lines = [
+        (0.98, "Philosopher deaths", 22, "#1f3b53", True),
+        (0.925, _interval_text(inputs), 12, "#555555", False),
+        (0.80, "EXACT DEATHS", 10, "#315b7d", True),
+        (0.755, str(exact), 25, "#111111", True),
+        (0.67, "Exact ages available: {} / {} ({})".format(ages, age_denominator, _format_number(age_pct) + "%" if age_pct is not None else "—"), 12, "#222222", False),
+        (0.625, "Median age: {}    Mean age: {}".format(_format_number(statistics["median"]), _format_number(statistics["mean"])), 12, "#222222", False),
+    ]
+    if total is not None:
+        lines.extend([
+            (0.51, "DATA COMPLETENESS", 10, "#315b7d", True),
+            (0.465, "Exact death dates: {} / {} ({})".format(completeness.get("exact_death_dates_total", "—"), total, _format_number(completeness.get("exact_death_date_coverage_pct")) + "%" if completeness.get("exact_death_date_coverage_pct") is not None else "—"), 11, "#222222", False),
+            (0.415, "Year-only: {}    Unknown: {}".format(completeness.get("year_only_death_dates_total", "—"), completeness.get("unknown_death_dates_total", "—")), 11, "#222222", False),
+            (0.365, "Exact birth dates: {} / {} ({})".format(completeness.get("exact_birth_dates_total", "—"), total, _format_number(completeness.get("exact_birth_date_coverage_pct")) + "%" if completeness.get("exact_birth_date_coverage_pct") is not None else "—"), 11, "#222222", False),
+        ])
+    extremes = inputs.get("age_extremes", {})
+    youngest, oldest = extremes.get("youngest"), extremes.get("oldest")
+    lines.append((0.25, "AGE EXTREMES", 10, "#315b7d", True))
+    lines.append((0.20, "Youngest: {} — {}".format(youngest.get("display_title", youngest.get("title")), youngest.get("age")) if youngest else "Youngest: unavailable", 11, "#222222", False))
+    lines.append((0.15, "Oldest: {} — {}".format(oldest.get("display_title", oldest.get("title")), oldest.get("age")) if oldest else "Oldest: unavailable", 11, "#222222", False))
+    for y, text, size, color, bold in lines:
+        axes.text(0.02, y, text, fontsize=size, color=color, fontweight="bold" if bold else "normal", va="top")
+    try:
+        figure.tight_layout()
+        return _atomic_figure_save(figure, destination), {"exact_deaths": exact, "exact_ages": ages, "age_coverage_pct": age_pct}
+    finally:
+        pyplot.close(figure)
+
+
+def _render_median_age_by_year(pyplot, inputs, destination):
+    yearly = inputs.get("yearly_statistics", [])
+    years = [item["year"] for item in yearly]
+    medians = [item.get("median_age") for item in yearly]
+    sample_sizes = [item.get("exact_ages_available", 0) for item in yearly]
+    figure, axes = pyplot.subplots(figsize=(10, 6.25))
+    try:
+        axes.set_title("Median exact age at death by year\n{}".format(_interval_text(inputs)))
+        positions = list(range(len(years)))
+        points = [(x, median_value) for x, median_value in zip(positions, medians) if median_value is not None]
+        if points:
+            axes.plot([point[0] for point in points], [point[1] for point in points], marker="o", color="#315b7d")
+            for x, value in points:
+                axes.annotate("n={}".format(sample_sizes[x]), (x, value), xytext=(0, 8), textcoords="offset points", ha="center", fontsize=9)
+            axes.set_ylabel("Median age (completed calendar years)")
+            axes.set_ylim(bottom=0)
+            axes.grid(axis="y", alpha=0.2)
+        else:
+            axes.axis("off")
+            axes.text(0.5, 0.48, "No exact-age yearly data available", ha="center", va="center", transform=axes.transAxes, fontsize=14)
+        if years:
+            axes.set_xticks(positions)
+            axes.set_xticklabels([str(year) for year in years])
+            axes.set_xlabel("Year")
+        figure.tight_layout()
+        return _atomic_figure_save(figure, destination), {"years": years, "medians": medians, "sample_sizes": sample_sizes, "zero_data_policy": "render-insufficient-data-placeholder"}
+    finally:
+        pyplot.close(figure)
 
 
 def _render_deaths_by_year(pyplot, inputs, destination):
@@ -447,6 +566,7 @@ def render_historical_death_report(
         raise DeathReportRenderError(
             "output directory is not empty; use --force to regenerate"
         )
+    output_was_absent = not output_directory.exists()
     output_directory.mkdir(parents=True, exist_ok=True)
     if pyplot is None:
         pyplot = _load_pyplot()
@@ -454,6 +574,13 @@ def render_historical_death_report(
     pending = []
     assets = []
     try:
+        filename = "summary-completeness.png"
+        temporary, semantic = _render_summary_completeness(
+            pyplot, inputs, output_directory / filename,
+        )
+        pending.append((temporary, output_directory / filename))
+        assets.append(_asset_metadata("summary-completeness", filename, temporary, **semantic))
+
         filename = "deaths-by-year.png"
         temporary, semantic = _render_deaths_by_year(
             pyplot, inputs, output_directory / filename,
@@ -462,6 +589,13 @@ def render_historical_death_report(
         assets.append(_asset_metadata(
             "deaths-by-year", filename, temporary, **semantic
         ))
+
+        filename = "median-age-by-year.png"
+        temporary, semantic = _render_median_age_by_year(
+            pyplot, inputs, output_directory / filename,
+        )
+        pending.append((temporary, output_directory / filename))
+        assets.append(_asset_metadata("median-age-by-year", filename, temporary, **semantic))
 
         filename = "age-at-death.png"
         temporary, semantic = _render_age_at_death(
@@ -493,6 +627,13 @@ def render_historical_death_report(
                 last_title=page_rows[-1]["title"] if page_rows else None,
             ))
 
+        if len(assets) > TELEGRAM_MEDIA_GROUP_MAX:
+            raise DeathReportRenderError(
+                "rendered report requires {} Telegram media items; maximum supported is {}".format(
+                    len(assets), TELEGRAM_MEDIA_GROUP_MAX,
+                )
+            )
+
         manifest = {
             "operation": "historical-death-report-render",
             "renderer_version": RENDERER_VERSION,
@@ -515,7 +656,7 @@ def render_historical_death_report(
             for path in output_directory.iterdir():
                 if path.is_file() and (
                     path.name.startswith("deaths-table-")
-                    or path.name in {"deaths-by-year.png", "age-at-death.png"}
+                    or path.name in {"summary-completeness.png", "deaths-by-year.png", "median-age-by-year.png", "age-at-death.png"}
                 ) and path.name not in expected_files:
                     path.unlink()
         return manifest, output_directory / "render-manifest.json"
@@ -523,4 +664,6 @@ def render_historical_death_report(
         for temporary, _ in pending:
             if temporary.exists():
                 temporary.unlink()
+        if output_was_absent and output_directory.exists() and not any(output_directory.iterdir()):
+            output_directory.rmdir()
         raise
