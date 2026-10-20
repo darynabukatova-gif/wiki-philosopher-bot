@@ -178,10 +178,15 @@ not enabled until supervised production validation is complete.
 ### Manual historical death-report posting
 
 Historical statistical posts are also **manual-only**: open **Actions → Manual
-philosopher death report → Run workflow**. Choose a positive calendar-year
-window (`last_years`, default `7`), optionally supply an inclusive `to_date`,
-choose `rows_per_page`, and explicitly enable `confirm_send`. Without that
-confirmation the workflow fails before it creates a report-post attempt.
+philosopher death report → Run workflow**. The default interval is the
+`preset` mode's `1_year` choice. Other calendar-year presets are `3_years`,
+`5_years`, `7_years`, `10_years`, and `calendar_year` (a complete January
+through December interval). Presets use calendar arithmetic, not a fixed number
+of days. For arbitrary ranges choose `custom` and provide both inclusive
+`from_date` and `to_date`. Choose `rows_per_page` and explicitly enable
+`confirm_send`; without that confirmation the workflow fails before it creates
+a report-post attempt. The renderer refuses intervals that would require more
+than ten Telegram media items, so longer intervals may need a narrower range.
 
 The workflow reads `database.jsonl` from the private authoritative repository,
 generates a read-only report and PNG assets in runner-temporary storage, then

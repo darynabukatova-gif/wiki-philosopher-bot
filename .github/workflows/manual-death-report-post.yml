@@ -3,13 +3,38 @@ name: Manual philosopher death report
 on:
   workflow_dispatch:
     inputs:
-      last_years:
-        description: 'Calendar-year reporting window'
+      interval_mode:
+        description: 'Choose a calendar-year preset or a custom inclusive interval'
         required: true
-        default: '7'
+        default: preset
+        type: choice
+        options:
+          - preset
+          - custom
+      preset:
+        description: 'Preset interval (1 year is the default)'
+        required: true
+        default: 1_year
+        type: choice
+        options:
+          - 1_year
+          - 3_years
+          - 5_years
+          - 7_years
+          - 10_years
+          - calendar_year
+      from_date:
+        description: 'Custom inclusive start date YYYY-MM-DD'
+        required: false
+        default: ''
         type: string
       to_date:
-        description: 'Optional inclusive end date YYYY-MM-DD; blank uses the run date'
+        description: 'Preset end date or custom inclusive end date YYYY-MM-DD'
+        required: false
+        default: ''
+        type: string
+      calendar_year:
+        description: 'Calendar year for the calendar_year preset (blank uses the effective current year)'
         required: false
         default: ''
         type: string
@@ -39,10 +64,14 @@ jobs:
       - name: Check out source repository
         uses: actions/checkout@v7
 
-      - name: Validate explicit manual inputs before any report-post mutation
+      - id: interval
+        name: Validate and resolve interval before any report-post mutation
         env:
-          LAST_YEARS: ${{ inputs.last_years }}
+          INTERVAL_MODE: ${{ inputs.interval_mode }}
+          PRESET: ${{ inputs.preset }}
+          FROM_DATE: ${{ inputs.from_date }}
           TO_DATE: ${{ inputs.to_date }}
+          CALENDAR_YEAR: ${{ inputs.calendar_year }}
           ROWS_PER_PAGE: ${{ inputs.rows_per_page }}
           CONFIRM_SEND: ${{ inputs.confirm_send }}
         run: |
@@ -51,22 +80,74 @@ jobs:
             echo "::error::confirm_send must be explicitly enabled before a pending report-post attempt can be created."
             exit 1
           fi
-          LAST_YEARS="${LAST_YEARS}" TO_DATE="${TO_DATE}" ROWS_PER_PAGE="${ROWS_PER_PAGE}" python - <<'PY'
+          RUN_DATE="$(TZ=Europe/Dublin date +%F)"
+          INTERVAL_MODE="${INTERVAL_MODE}" PRESET="${PRESET}" FROM_DATE="${FROM_DATE}" TO_DATE="${TO_DATE}" CALENDAR_YEAR="${CALENDAR_YEAR}" RUN_DATE="${RUN_DATE}" ROWS_PER_PAGE="${ROWS_PER_PAGE}" python - <<'PY' >> "${GITHUB_OUTPUT}"
           import os
           from datetime import date
 
-          for name in ("LAST_YEARS", "ROWS_PER_PAGE"):
+          mode = os.environ["INTERVAL_MODE"]
+          preset = os.environ["PRESET"]
+          from_text = os.environ["FROM_DATE"]
+          to_text = os.environ["TO_DATE"]
+          year_text = os.environ["CALENDAR_YEAR"]
+          run_date = date.fromisoformat(os.environ["RUN_DATE"])
+          if mode not in ("preset", "custom"):
+              raise SystemExit("INTERVAL_MODE must be preset or custom")
+          allowed = {"1_year": 1, "3_years": 3, "5_years": 5, "7_years": 7, "10_years": 10, "calendar_year": None}
+          if mode == "custom":
+              if not from_text or not to_text:
+                  raise SystemExit("custom mode requires both from_date and to_date")
               try:
-                  value = int(os.environ[name])
+                  start, end = date.fromisoformat(from_text), date.fromisoformat(to_text)
               except ValueError as error:
-                  raise SystemExit("{} must be a positive integer.".format(name)) from error
-              if value <= 0:
-                  raise SystemExit("{} must be a positive integer.".format(name))
-          if os.environ["TO_DATE"]:
-              try:
-                  date.fromisoformat(os.environ["TO_DATE"])
-              except ValueError as error:
-                  raise SystemExit("TO_DATE must be a valid YYYY-MM-DD date.") from error
+                  raise SystemExit("custom from_date and to_date must be valid YYYY-MM-DD dates") from error
+              if start > end:
+                  raise SystemExit("custom from_date must not be after to_date")
+              if year_text:
+                  raise SystemExit("calendar_year is only valid with preset=calendar_year")
+              print("report_mode=explicit")
+              print("resolved_from={}".format(start))
+              print("resolved_to={}".format(end))
+          else:
+              if from_text:
+                  raise SystemExit("from_date is only valid in custom mode")
+              if preset not in allowed:
+                  raise SystemExit("unsupported preset")
+              if preset == "calendar_year":
+                  if to_text:
+                      raise SystemExit("to_date is not used with preset=calendar_year")
+                  if year_text:
+                      if len(year_text) != 4 or not year_text.isdigit() or int(year_text) <= 0:
+                          raise SystemExit("calendar_year must be a positive four-digit year")
+                      year = int(year_text)
+                  else:
+                      year = run_date.year
+                  print("report_mode=explicit")
+                  print("resolved_from={}-01-01".format(year))
+                  print("resolved_to={}-12-31".format(year))
+              else:
+                  if year_text:
+                      raise SystemExit("calendar_year is only valid with preset=calendar_year")
+                  end = run_date
+                  if to_text:
+                      try:
+                          end = date.fromisoformat(to_text)
+                      except ValueError as error:
+                          raise SystemExit("to_date must be a valid YYYY-MM-DD date") from error
+                  print("report_mode=last-years")
+                  print("resolved_from=")
+                  print("resolved_to={}".format(end))
+                  print("last_years={}".format(allowed[preset]))
+              print("resolved_preset={}".format(preset))
+          print("interval_mode={}".format(mode))
+          print("run_date={}".format(run_date))
+
+          try:
+              rows = int(os.environ["ROWS_PER_PAGE"])
+          except ValueError as error:
+              raise SystemExit("ROWS_PER_PAGE must be a positive integer.") from error
+          if rows <= 0:
+              raise SystemExit("ROWS_PER_PAGE must be a positive integer.")
           PY
 
       - name: Require private data repository configuration
@@ -133,14 +214,21 @@ jobs:
       - id: report
         name: Generate read-only historical death report from authoritative data
         env:
-          LAST_YEARS: ${{ inputs.last_years }}
-          TO_DATE: ${{ inputs.to_date }}
+          REPORT_MODE: ${{ steps.interval.outputs.report_mode }}
+          LAST_YEARS: ${{ steps.interval.outputs.last_years }}
+          RESOLVED_FROM: ${{ steps.interval.outputs.resolved_from }}
+          RESOLVED_TO: ${{ steps.interval.outputs.resolved_to }}
         run: |
           set -euo pipefail
           report_path="${RUNNER_TEMP}/historical-death-report.json"
-          report_args=(--last-years "${LAST_YEARS}" --data-folder data --json "${report_path}")
-          if [[ -n "${TO_DATE}" ]]; then
-            report_args+=(--to "${TO_DATE}")
+          report_args=(--data-folder data --json "${report_path}")
+          if [[ "${REPORT_MODE}" == "last-years" ]]; then
+            report_args+=(--last-years "${LAST_YEARS}" --to "${RESOLVED_TO}")
+          elif [[ "${REPORT_MODE}" == "explicit" ]]; then
+            report_args+=(--from "${RESOLVED_FROM}" --to "${RESOLVED_TO}")
+          else
+            echo "::error::Unknown resolved report mode: ${REPORT_MODE}"
+            exit 1
           fi
           wiki-philosopher-death-report "${report_args[@]}"
           test -s "${report_path}"
@@ -151,8 +239,33 @@ jobs:
               report = json.load(handle)
           if report.get("operation") != "historical-death-report" or report.get("mode") != "read-only":
               raise SystemExit("Historical report did not have the expected read-only format.")
+          interval = report.get("interval")
+          if not isinstance(interval, dict) or not interval.get("from") or not interval.get("to"):
+              raise SystemExit("Historical report did not contain a resolved interval.")
+          print("resolved_from={}".format(interval["from"]))
+          print("resolved_to={}".format(interval["to"]))
           PY
           echo "report_path=${report_path}" >> "${GITHUB_OUTPUT}"
+
+      - name: Record resolved report interval
+        env:
+          INTERVAL_MODE: ${{ steps.interval.outputs.interval_mode }}
+          PRESET: ${{ steps.interval.outputs.resolved_preset }}
+          REPORT_PATH: ${{ steps.report.outputs.report_path }}
+        run: |
+          set -euo pipefail
+          REPORT_PATH="${REPORT_PATH}" INTERVAL_MODE="${INTERVAL_MODE}" PRESET="${PRESET}" python - <<'PY' >> "${GITHUB_STEP_SUMMARY}"
+          import json
+          import os
+          report = json.loads(open(os.environ["REPORT_PATH"], encoding="utf-8").read())
+          interval = report["interval"]
+          print("## Historical death report interval")
+          print("")
+          print("- Mode: {}".format(os.environ["INTERVAL_MODE"]))
+          if os.environ["INTERVAL_MODE"] == "preset":
+              print("- Preset: {}".format(os.environ["PRESET"]))
+          print("- Resolved interval: {} through {} (inclusive)".format(interval["from"], interval["to"]))
+          PY
 
       - id: render
         name: Render report PNG assets into runner temporary storage

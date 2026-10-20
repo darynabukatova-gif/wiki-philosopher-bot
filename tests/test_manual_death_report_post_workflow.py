@@ -19,15 +19,23 @@ def test_workflow_is_manual_only_and_requires_explicit_send_confirmation():
     assert "schedule:" not in text
     assert "group: wiki-philosopher-authoritative-data" in text
     assert "cancel-in-progress: false" in text
-    assert "last_years:" in text and "default: '7'" in text
+    assert "interval_mode:" in text and "default: preset" in text
+    assert "preset:" in text and "default: 1_year" in text
+    for option in ("1_year", "3_years", "5_years", "7_years", "10_years", "calendar_year"):
+        assert f"          - {option}" in text
+    assert "from_date:" in text
     assert "to_date:" in text
+    assert "calendar_year:" in text
     assert "rows_per_page:" in text and "default: '22'" in text
     assert "confirm_send:" in text and "default: false" in text
-    assert text.index("Validate explicit manual inputs") < text.index("name: Freeze one pending")
+    assert text.index("Validate and resolve interval") < text.index("name: Freeze one pending")
     assert 'if [[ "${CONFIRM_SEND}" != "true" ]]; then' in text
-    assert "for name in (\"LAST_YEARS\", \"ROWS_PER_PAGE\")" in text
+    assert 'allowed = {"1_year": 1, "3_years": 3, "5_years": 5, "7_years": 7, "10_years": 10, "calendar_year": None}' in text
+    assert "custom mode requires both from_date and to_date" in text
+    assert "custom from_date must not be after to_date" in text
+    assert "calendar_year must be a positive four-digit year" in text
     assert "must be a positive integer" in text
-    assert "TO_DATE must be a valid YYYY-MM-DD date" in text
+    assert "to_date must be a valid YYYY-MM-DD date" in text
 
 
 def test_workflow_uses_private_database_for_explicit_temp_report_and_render_paths():
@@ -42,7 +50,10 @@ def test_workflow_uses_private_database_for_explicit_temp_report_and_render_path
     assert 'assets_dir="${RUNNER_TEMP}/death-report-assets"' in text
     assert "wiki-philosopher-death-report" in text
     assert "wiki-philosopher-render-death-report" in text
-    assert "--data-folder data --json \"${report_path}\"" in text
+    assert "report_args=(--data-folder data --json \"${report_path}\")" in text
+    assert 'report_args+=(--last-years "${LAST_YEARS}" --to "${RESOLVED_TO}")' in text
+    assert 'report_args+=(--from "${RESOLVED_FROM}" --to "${RESOLVED_TO}")' in text
+    assert "Record resolved report interval" in text
     assert "--output-dir \"${assets_dir}\" --rows-per-page \"${ROWS_PER_PAGE}\"" in text
     assert "refresh-wikidata" not in text
     pending = text[text.index("name: Commit and push pending report-post bundle"):text.index("id: dispatch")]
@@ -120,3 +131,30 @@ def test_shared_authoritative_lock_and_non_secret_result_artifacts_are_preserved
     assert "death-report-post-dispatch.json" in text
     assert "report-posts" not in text[text.index("name: Upload non-secret"):]
     assert "ghp_" not in text
+
+
+def test_interval_presets_and_custom_validation_are_resolved_before_reporting():
+    text = workflow_text()
+    validation = text[text.index("id: interval"):text.index("name: Require private data")]
+    report = text[text.index("id: report"):text.index("id: render")]
+
+    assert "report_mode=last-years" in validation
+    assert "report_mode=explicit" in validation
+    assert "resolved_from={}-01-01" in validation
+    assert "resolved_to={}-12-31" in validation
+    assert "--last-years \"${LAST_YEARS}\" --to \"${RESOLVED_TO}\"" in report
+    assert "--from \"${RESOLVED_FROM}\" --to \"${RESOLVED_TO}\"" in report
+    assert validation.index("confirm_send must be explicitly enabled") < validation.index("RUN_DATE=")
+    assert text.index("id: interval") < text.index("name: Check out authoritative private data repository")
+
+
+def test_renderer_failure_prevents_report_post_prepare_and_dispatch():
+    text = workflow_text()
+    render = text.index("id: render")
+    prepare = text.index("id: prepare")
+    dispatch = text.index("id: dispatch")
+    assert render < prepare < dispatch
+    render_block = text[render:prepare]
+    assert "wiki-philosopher-render-death-report" in render_block
+    assert "set -euo pipefail" in render_block
+    assert "|| true" not in render_block
