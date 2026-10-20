@@ -203,6 +203,11 @@ terminal checkpoint reaches the private repository, **do not rerun it**.
 Inspect and reconcile the exact report-post attempt first. No schedule is
 configured for this workflow.
 
+The preview caption summarizes the interval, confirmed exact deaths, exact-age
+coverage, mean and median age, youngest/oldest exact-age records, and whole-
+dataset exact death-date coverage. Detailed rows and charts remain in the
+attached images. Public channel publication reuses this same frozen caption.
+
 ### Posting-attempt reconciliation
 
 Posting attempts are deliberately never resent automatically after an

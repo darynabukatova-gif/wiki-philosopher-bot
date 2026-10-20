@@ -8,7 +8,7 @@ from wiki_philosopher_bot.death_report_rendering import (
 )
 from wiki_philosopher_bot.report_post_outbox import (
     content_fingerprint, dispatch_report_post, load_attempt, prepare_report_post,
-    reconcile_report_post, verify_bundle,
+    reconcile_report_post, verify_bundle, _caption,
 )
 from wiki_philosopher_bot.telegram_bot import TelegramMediaGroupResult, TELEGRAM_OUTCOME_CONFIRMED_SUCCESS, TELEGRAM_OUTCOME_DEFINITE_REJECTION, TELEGRAM_OUTCOME_AMBIGUOUS
 
@@ -37,6 +37,115 @@ def test_prepare_freezes_complete_bundle_without_changing_sources(rendered):
     assert '<b>Philosopher deaths: 2019-09-26–2026-09-26</b>' in attempt['caption_html']
     assert source.read_bytes()==before[0] and manifest.read_bytes()==before[1]
     assert verify_bundle(bundle,attempt) and set(x.name for x in bundle.iterdir())=={'attempt.json','source-report.json','render-manifest.json',*[x['filename'] for x in attempt['media']]}
+
+
+def test_enriched_report_caption_uses_completeness_and_age_extremes(tmp_path):
+    rows = [
+        row("A < B & C", "2024-01-01", 68),
+        row("Age 75", "2024-02-01", 75),
+        row("Age 80", "2024-03-01", 80),
+        row("Age 82", "2024-04-01", 82),
+        row("Age 83", "2024-05-01", 83),
+        row("Age 90", "2024-06-01", 90),
+        row("Age 95", "2024-07-01", 95),
+        row("Old Philosopher", "2025-01-01", 100),
+        row("No Exact Age", "2025-02-01"),
+    ]
+    value = report(rows)
+    value["data_completeness"] = {
+        "semantic_philosophers_total": 10,
+        "exact_death_date_coverage_pct": 40.51,
+        "exact_age_coverage_for_interval_pct": 88.888,
+    }
+    value["age_extremes"] = {
+        "youngest": {"title": "A < B & C", "display_title": "A < B & C", "death_date": "2024-01-01", "age": 68},
+        "oldest": {"title": "Old Philosopher", "display_title": "Old Philosopher", "death_date": "2025-01-01", "age": 100},
+    }
+    value["age_statistics"]["mean"] = 84.125
+    value["age_statistics"]["median"] = 82.5
+    source = tmp_path / "enriched.json"
+    source.write_text(json.dumps(value) + "\n")
+    _, manifest = render_historical_death_report(source, output_directory=tmp_path / "assets", rows_per_page=2)
+    result = prepare_report_post(source, manifest, tmp_path / "state")
+    assert result.ok
+    caption = load_attempt(tmp_path / "state" / result.attempt_id)["caption_html"]
+    assert caption == (
+        "<b>Philosopher deaths: 2019-09-26–2026-09-26</b>\n\n"
+        "Confirmed exact deaths: 9\n"
+        "Exact ages available: 8/9 (88.9%)\n"
+        "Median age: 82.5\n"
+        "Mean age: 84.1\n\n"
+        "Youngest: A &lt; B &amp; C — 68\n"
+        "Oldest: Old Philosopher — 100\n\n"
+        "Exact death dates available for 40.5% of the philosopher dataset."
+    )
+
+
+def test_enriched_caption_sparse_data_is_readable(tmp_path):
+    value = report([])
+    value["data_completeness"] = {
+        "semantic_philosophers_total": 0,
+        "exact_death_date_coverage_pct": None,
+        "exact_age_coverage_for_interval_pct": None,
+    }
+    value["age_extremes"] = {"youngest": None, "oldest": None}
+    source = tmp_path / "empty.json"
+    source.write_text(json.dumps(value) + "\n")
+    _, manifest = render_historical_death_report(source, output_directory=tmp_path / "assets")
+    result = prepare_report_post(source, manifest, tmp_path / "state")
+    assert result.ok
+    caption = load_attempt(tmp_path / "state" / result.attempt_id)["caption_html"]
+    assert "Confirmed exact deaths: 0" in caption
+    assert "Exact ages available: 0/0 (n/a)" in caption
+    assert "Median age: n/a" in caption and "Mean age: n/a" in caption
+    assert "Youngest: n/a" in caption and "Oldest: n/a" in caption
+    assert "Exact death dates available for n/a" in caption
+
+
+@pytest.mark.parametrize(
+    ("percentage", "expected"),
+    [(87.5, "87.5%"), (100.0, "100%"), (0.0, "0%"), (None, "n/a")],
+)
+def test_rich_caption_percentage_and_age_number_formatting(percentage, expected):
+    normalized = {
+        "interval": {"from": "2024-01-01", "to": "2024-12-31"},
+        "rows": [{"display_title": "Name", "title": "Name", "age_at_death": 85, "death_date": "2024-01-01"}],
+        "ages": [85],
+        "age_statistics": {"mean": 84.125, "median": 85.5},
+        "data_completeness": {
+            "exact_age_coverage_for_interval_pct": percentage,
+            "exact_death_date_coverage_pct": percentage,
+        },
+        "age_extremes": {
+            "youngest": {"display_title": "Name", "age": 85},
+            "oldest": {"display_title": "Name", "age": 85},
+        },
+    }
+    caption = _caption(normalized)
+    assert "Exact ages available: 1/1 ({})".format(expected) in caption
+    assert "Mean age: 84.1" in caption
+    assert "Median age: 85.5" in caption
+
+
+def test_enriched_caption_rejects_overlong_caption_before_bundle_creation(tmp_path):
+    long_name = "X" * 1500
+    value = report([row(long_name, "2024-01-01", 80)])
+    value["data_completeness"] = {
+        "semantic_philosophers_total": 1,
+        "exact_death_date_coverage_pct": 100.0,
+        "exact_age_coverage_for_interval_pct": 100.0,
+    }
+    value["age_extremes"] = {
+        "youngest": {"title": long_name, "display_title": long_name, "death_date": "2024-01-01", "age": 80},
+        "oldest": {"title": long_name, "display_title": long_name, "death_date": "2024-01-01", "age": 80},
+    }
+    source = tmp_path / "long.json"
+    source.write_text(json.dumps(value) + "\n")
+    _, manifest = render_historical_death_report(source, output_directory=tmp_path / "assets")
+    state = tmp_path / "state"
+    result = prepare_report_post(source, manifest, state)
+    assert not result.ok and "caption exceeds Telegram limit" in result.error_summary
+    assert not state.exists() or not list(state.iterdir())
 
 def test_prepare_rejects_report_and_png_hash_mismatch_and_missing(rendered):
     source,manifest,state=rendered

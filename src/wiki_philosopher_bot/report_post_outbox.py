@@ -189,13 +189,95 @@ def _validate_manifest(report_path, manifest_path):
     checked.sort(key=lambda row: (order.get(row[0]["kind"],4), row[0].get("page",0)))
     return report, normalized, manifest, report_bytes, manifest_bytes, checked
 
+def _format_compact_percentage(value):
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return "n/a"
+    rounded = round(float(value), 1)
+    return "{}%".format(int(rounded) if rounded.is_integer() else "{:.1f}".format(rounded))
+
+
+def _format_mean(value):
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return "n/a"
+    return "{:.1f}".format(float(value))
+
+
+def _format_median(value):
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return "n/a"
+    return "{:g}".format(value)
+
+
+def _extreme_caption_line(label, value):
+    if not isinstance(value, dict):
+        return "{}: n/a".format(label)
+    name = value.get("display_title") or value.get("title")
+    age = value.get("age")
+    if not isinstance(name, str) or not name.strip() or not isinstance(age, (int, float)) or isinstance(age, bool):
+        return "{}: n/a".format(label)
+    return "{}: {} — {}".format(label, html.escape(name, quote=True), _format_median(age))
+
+
 def _caption(normalized):
-    interval=normalized["interval"]; stats=normalized["age_statistics"]
-    def number(value): return "unavailable" if value is None else ("{:.1f}".format(value) if isinstance(value,float) and not value.is_integer() else "{:g}".format(value))
-    text="\n".join(("<b>Philosopher deaths: {}–{}</b>".format(html.escape(interval["from"]),html.escape(interval["to"])),
-        "Confirmed exact deaths: {}".format(len(normalized["rows"])), "Exact ages available: {}".format(len(normalized["ages"])),
-        "Mean age: {}".format(number(stats["mean"])), "Median age: {}".format(number(stats["median"]))))
-    if len(text)>TELEGRAM_CAPTION_MAX_LENGTH: raise ReportPostError("caption exceeds Telegram limit")
+    """Build the one caption frozen into a report-post bundle.
+
+    Reports produced before the enriched Phase 8A schema deliberately retain
+    the original compact caption format.  Enriched reports carry both
+    ``data_completeness`` and ``age_extremes`` and use the richer summary.
+    """
+    interval = normalized["interval"]
+    stats = normalized["age_statistics"]
+    completeness = normalized.get("data_completeness") or {}
+    extremes = normalized.get("age_extremes") or {}
+    rich = (
+        isinstance(completeness, dict)
+        and "exact_age_coverage_for_interval_pct" in completeness
+        and "exact_death_date_coverage_pct" in completeness
+        and isinstance(extremes, dict)
+        and "youngest" in extremes
+        and "oldest" in extremes
+    )
+    heading = "<b>Philosopher deaths: {}–{}</b>".format(
+        html.escape(interval["from"]), html.escape(interval["to"])
+    )
+    if rich:
+        exact_deaths = len(normalized["rows"])
+        exact_ages = len(normalized["ages"])
+        age_coverage = _format_compact_percentage(
+            completeness.get("exact_age_coverage_for_interval_pct")
+        ) if exact_deaths else "n/a"
+        lines = [
+            heading,
+            "",
+            "Confirmed exact deaths: {}".format(exact_deaths),
+            "Exact ages available: {}/{} ({})".format(exact_ages, exact_deaths, age_coverage),
+            "Median age: {}".format(_format_median(stats.get("median"))),
+            "Mean age: {}".format(_format_mean(stats.get("mean"))),
+            "",
+            _extreme_caption_line("Youngest", extremes.get("youngest")),
+            _extreme_caption_line("Oldest", extremes.get("oldest")),
+            "",
+            "Exact death dates available for {} of the philosopher dataset.".format(
+                _format_compact_percentage(completeness.get("exact_death_date_coverage_pct"))
+            ),
+        ]
+    else:
+        def legacy_number(value):
+            if value is None:
+                return "unavailable"
+            if isinstance(value, float) and not value.is_integer():
+                return "{:.1f}".format(value)
+            return "{:g}".format(value)
+        lines = [
+            heading,
+            "Confirmed exact deaths: {}".format(len(normalized["rows"])),
+            "Exact ages available: {}".format(len(normalized["ages"])),
+            "Mean age: {}".format(legacy_number(stats["mean"])),
+            "Median age: {}".format(legacy_number(stats["median"])),
+        ]
+    text = "\n".join(lines)
+    if len(text) > TELEGRAM_CAPTION_MAX_LENGTH:
+        raise ReportPostError("caption exceeds Telegram limit")
     return text
 
 def _fingerprint(report_sha, manifest_sha, caption, media):
