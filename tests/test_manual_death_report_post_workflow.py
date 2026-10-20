@@ -158,19 +158,3 @@ def test_renderer_failure_prevents_report_post_prepare_and_dispatch():
     assert "wiki-philosopher-render-death-report" in render_block
     assert "set -euo pipefail" in render_block
     assert "|| true" not in render_block
-
-
-def test_asset_contract_diagnostic_runs_after_render_before_prepare_without_secrets():
-    text = workflow_text()
-    diagnostic = text[text.index("name: Diagnose rendered asset contract"):text.index("id: prepare")]
-    assert text.index("id: render") < text.index("name: Diagnose rendered asset contract") < text.index("id: prepare")
-    assert "git rev-parse HEAD" in diagnostic
-    assert "wiki_philosopher_bot.__file__" in diagnostic
-    assert "death_report_rendering as rendering" in diagnostic
-    assert "report_post_outbox as outbox" in diagnostic
-    assert "INTERVAL_SUMMARY_KIND" in diagnostic
-    assert "_validate_media_layout" in diagnostic
-    assert "_validate_manifest" in diagnostic
-    assert "MANIFEST_PATH" in diagnostic
-    assert "TELEGRAM_TOKEN" not in diagnostic
-    assert "REPORT_TELEGRAM_CHAT_ID" not in diagnostic

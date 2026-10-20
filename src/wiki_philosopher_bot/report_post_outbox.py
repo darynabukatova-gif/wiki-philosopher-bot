@@ -32,6 +32,9 @@ TRANSITIONS = {"pending": frozenset(("sent", "failed", "unknown", "cancelled")),
                "failed": frozenset(("cancelled",)), "unknown": frozenset(("sent", "cancelled")),
                "sent": frozenset(), "cancelled": frozenset()}
 SHA_LENGTH = 64
+LAYOUT_CURRENT = "adaptive-v2"
+LAYOUT_LEGACY_SUMMARY = "summary-v2"
+LAYOUT_LEGACY_V1 = "v1"
 
 class ReportPostError(ValueError):
     pass
@@ -89,7 +92,27 @@ def _safe_filename(value):
     return isinstance(value, str) and value and Path(value).name == value and value not in (".", "..")
 
 
-def _validate_media_layout(media):
+def _layout_for_manifest(manifest):
+    """Return the strict media layout associated with a frozen manifest."""
+    if not isinstance(manifest, dict):
+        raise ReportPostError("unsupported render manifest")
+    version = manifest.get("renderer_version")
+    assets = manifest.get("assets")
+    if version not in (1, 2) or not isinstance(assets, list) or not assets:
+        raise ReportPostError("unsupported render manifest")
+    first = assets[0].get("kind") if isinstance(assets[0], dict) else None
+    if version == 1:
+        if first != DEATHS_BY_YEAR_KIND:
+            raise ReportPostError("renderer v1 manifest must begin with deaths-by-year")
+        return LAYOUT_LEGACY_V1
+    if first == LEGACY_SUMMARY_KIND:
+        return LAYOUT_LEGACY_SUMMARY
+    if first == INTERVAL_SUMMARY_KIND:
+        return LAYOUT_CURRENT
+    raise ReportPostError("renderer v2 manifest has an unknown first media kind")
+
+
+def _validate_media_layout(media, layout=LAYOUT_CURRENT):
     """Require the renderer's canonical adaptive media order.
 
     New manifests use ``interval-summary`` followed by exactly one frequency
@@ -99,6 +122,26 @@ def _validate_media_layout(media):
     """
     if not media:
         raise ReportPostError("media must not be empty")
+    if layout == LAYOUT_LEGACY_V1:
+        if len(media) < 3 or media[0].get("kind") != DEATHS_BY_YEAR_KIND or media[1].get("kind") != AGE_AT_DEATH_KIND:
+            raise ReportPostError("renderer v1 media must begin with year and age charts")
+        tables = media[2:]
+        if any(item.get("kind") != DEATHS_TABLE_KIND for item in tables):
+            raise ReportPostError("media must end with death-table pages")
+        if [item.get("page") for item in tables] != list(range(1, len(tables) + 1)):
+            raise ReportPostError("attempt table pages must be contiguous")
+        return
+    if layout == LAYOUT_LEGACY_SUMMARY:
+        expected = [LEGACY_SUMMARY_KIND, DEATHS_BY_YEAR_KIND,
+                    MEDIAN_AGE_BY_YEAR_KIND, AGE_AT_DEATH_KIND]
+        if len(media) < len(expected) + 1 or [item.get("kind") for item in media[:4]] != expected:
+            raise ReportPostError("renderer v2 legacy media has an invalid summary layout")
+        tables = media[4:]
+        if any(item.get("kind") != DEATHS_TABLE_KIND for item in tables):
+            raise ReportPostError("media must end with death-table pages")
+        if [item.get("page") for item in tables] != list(range(1, len(tables) + 1)):
+            raise ReportPostError("attempt table pages must be contiguous")
+        return
     first = media[0].get("kind")
     if first not in (INTERVAL_SUMMARY_KIND, LEGACY_SUMMARY_KIND):
         raise ReportPostError("media must begin with an interval summary")
@@ -133,7 +176,7 @@ def _validate_media_layout(media):
     if pages != list(range(1, len(tables) + 1)):
         raise ReportPostError("attempt table pages must be contiguous")
 
-def validate_attempt(attempt):
+def validate_attempt(attempt, layout=None):
     if not isinstance(attempt, dict) or attempt.get("schema_version") != SCHEMA_VERSION or attempt.get("kind") != KIND:
         raise ReportPostError("unsupported report-post attempt schema")
     if not _valid_uuid(attempt.get("attempt_id")): raise ReportPostError("attempt_id must be a canonical UUID")
@@ -161,7 +204,13 @@ def validate_attempt(attempt):
         if not isinstance(item, dict) or item.get("position") != index or not _safe_filename(item.get("filename")) or not _is_sha(item.get("sha256")): raise ReportPostError("invalid ordered media entry")
         if item["filename"] in names: raise ReportPostError("duplicate media filename")
         names.add(item["filename"])
-    _validate_media_layout(media)
+    if layout is None:
+        first_kind = media[0].get("kind") if media else None
+        layout = (LAYOUT_CURRENT if first_kind == INTERVAL_SUMMARY_KIND
+                  else LAYOUT_LEGACY_SUMMARY if first_kind == LEGACY_SUMMARY_KIND
+                  else LAYOUT_LEGACY_V1 if first_kind == DEATHS_BY_YEAR_KIND
+                  else LAYOUT_CURRENT)
+    _validate_media_layout(media, layout)
     ids = attempt.get("telegram_message_ids")
     if not isinstance(ids, list) or any(not _is_int(x) or x <= 0 for x in ids): raise ReportPostError("invalid Telegram message IDs")
     if state == "sent" and len(ids) != len(media): raise ReportPostError("sent attempt requires a complete message-ID list")
@@ -177,9 +226,11 @@ def validate_attempt(attempt):
 
 def load_attempt(bundle):
     path = Path(bundle) / "attempt.json"
-    try: value = json.loads(path.read_text(encoding="utf-8"))
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+        manifest = json.loads((Path(bundle) / "render-manifest.json").read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error: raise ReportPostError("attempt.json is unreadable or malformed") from error
-    return validate_attempt(value)
+    return validate_attempt(value, _layout_for_manifest(manifest))
 
 def list_attempts(state_root):
     root = Path(state_root)
@@ -221,10 +272,18 @@ def _validate_manifest(report_path, manifest_path):
         elif kind == DEATHS_TABLE_KIND: tables.append(asset)
         else: raise ReportPostError("unsupported manifest asset kind")
         checked.append((asset,path,data))
-    _validate_media_layout(assets)
-    if charts[INTERVAL_SUMMARY_KIND] + charts[LEGACY_SUMMARY_KIND] != 1: raise ReportPostError("manifest must contain exactly one interval summary")
-    if charts[DEATHS_BY_YEAR_KIND] + charts[DEATHS_BY_MONTH_KIND] != 1: raise ReportPostError("manifest must contain exactly one death-frequency chart")
-    if charts[AGE_AT_DEATH_KIND] + charts[INDIVIDUAL_AGES_KIND] != 1: raise ReportPostError("manifest must contain exactly one age chart")
+    layout = _layout_for_manifest(manifest)
+    _validate_media_layout(assets, layout)
+    if layout == LAYOUT_CURRENT:
+        if charts[INTERVAL_SUMMARY_KIND] != 1: raise ReportPostError("manifest must contain exactly one interval summary")
+        if charts[DEATHS_BY_YEAR_KIND] + charts[DEATHS_BY_MONTH_KIND] != 1: raise ReportPostError("manifest must contain exactly one death-frequency chart")
+        if charts[AGE_AT_DEATH_KIND] + charts[INDIVIDUAL_AGES_KIND] != 1: raise ReportPostError("manifest must contain exactly one age chart")
+    elif layout == LAYOUT_LEGACY_SUMMARY:
+        if charts[LEGACY_SUMMARY_KIND] != 1 or charts[DEATHS_BY_YEAR_KIND] != 1 or charts[MEDIAN_AGE_BY_YEAR_KIND] != 1 or charts[AGE_AT_DEATH_KIND] != 1:
+            raise ReportPostError("legacy renderer v2 manifest has an invalid chart layout")
+    else:
+        if charts[DEATHS_BY_YEAR_KIND] != 1 or charts[AGE_AT_DEATH_KIND] != 1:
+            raise ReportPostError("renderer v1 manifest has an invalid chart layout")
     if not tables: raise ReportPostError("manifest must contain table pages")
     pages=sorted(asset.get("page") for asset in tables)
     if pages != list(range(1,len(tables)+1)) or any(asset.get("total_pages") != len(tables) for asset in tables): raise ReportPostError("table pages must be contiguous")

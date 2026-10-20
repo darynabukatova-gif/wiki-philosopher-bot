@@ -1,4 +1,4 @@
-import hashlib, json, copy
+import hashlib, json, copy, shutil
 from pathlib import Path
 from collections import Counter
 from statistics import median
@@ -108,6 +108,107 @@ def test_actual_renderer_multi_year_adaptive_manifest_prepares_in_canonical_orde
         "median-age-by-year.png", "age-at-death.png",
         "deaths-table-001.png",
     ]
+
+
+def test_historical_v1_bundle_does_not_block_current_adaptive_prepare(tmp_path):
+    """A real pre-summary bundle remains readable during duplicate scans."""
+    rows = [
+        row("A", "2019-10-01", 70), row("B", "2020-02-01", 71),
+        row("C", "2020-08-01", 72), row("D", "2021-03-01", 73),
+        row("E", "2021-09-01", 74), row("F", "2022-04-01", 75),
+        row("G", "2023-05-01", 76), row("H", "2024-06-01", 77),
+    ]
+    historical_source = tmp_path / "historical-report.json"
+    historical_source.write_text(json.dumps(report(rows)) + "\n")
+    _, current_manifest_path = render_historical_death_report(
+        historical_source, output_directory=tmp_path / "current-assets", rows_per_page=22
+    )
+    current_manifest = json.loads(current_manifest_path.read_text())
+
+    # Freeze a strict renderer-v1 layout as a historical source bundle.  This
+    # mirrors the real private attempt without rewriting the current renderer.
+    legacy_assets = [
+        asset for asset in current_manifest["assets"]
+        if asset["kind"] in {DEATHS_BY_YEAR_KIND, AGE_AT_DEATH_KIND, DEATHS_TABLE_KIND}
+    ]
+    legacy_manifest = dict(current_manifest)
+    legacy_manifest["renderer_version"] = 1
+    legacy_manifest["assets"] = legacy_assets
+    legacy_dir = tmp_path / "legacy-assets"
+    legacy_dir.mkdir()
+    for asset in legacy_assets:
+        shutil.copy2(current_manifest_path.parent / asset["filename"], legacy_dir / asset["filename"])
+    legacy_manifest_path = legacy_dir / "render-manifest.json"
+    legacy_manifest_path.write_text(json.dumps(legacy_manifest) + "\n")
+
+    state = tmp_path / "state"
+    historical = prepare_report_post(
+        historical_source, legacy_manifest_path, state,
+        attempt_id="11111111-1111-4111-8111-111111111111",
+    )
+    assert historical.ok
+    old_bundle = state / historical.attempt_id
+    old_manifest_before = (old_bundle / "render-manifest.json").read_bytes()
+    assert reconcile_report_post(
+        historical.attempt_id, state, "mark-sent",
+        message_ids=list(range(1, len(load_attempt(old_bundle)["media"]) + 1)),
+        note="historical fixture delivery",
+    ).ok
+    old_attempt_after = (old_bundle / "attempt.json").read_bytes()
+
+    current_source = tmp_path / "current-report.json"
+    current_source.write_text(json.dumps(report(rows + [row("I", "2025-01-01", 78)])) + "\n")
+    _, current_manifest_path = render_historical_death_report(
+        current_source, output_directory=tmp_path / "current-assets-2", rows_per_page=22
+    )
+    current = prepare_report_post(current_source, current_manifest_path, state)
+    assert current.ok and current.ending_state == "pending"
+    assert load_attempt(old_bundle)["state"] == "sent"
+    assert (old_bundle / "render-manifest.json").read_bytes() == old_manifest_before
+    assert (old_bundle / "attempt.json").read_bytes() == old_attempt_after
+
+
+def test_historical_summary_completeness_layout_is_strictly_supported(tmp_path):
+    rows = [
+        row("A", "2019-10-01", 70), row("B", "2020-02-01", 71),
+        row("C", "2020-08-01", 72), row("D", "2021-03-01", 73),
+        row("E", "2021-09-01", 74), row("F", "2022-04-01", 75),
+        row("G", "2023-05-01", 76), row("H", "2024-06-01", 77),
+    ]
+    source = tmp_path / "report.json"
+    source.write_text(json.dumps(report(rows)) + "\n")
+    _, manifest_path = render_historical_death_report(
+        source, output_directory=tmp_path / "assets", rows_per_page=22
+    )
+    manifest = json.loads(manifest_path.read_text())
+    assets = manifest["assets"]
+    selected = [asset for asset in assets if asset["kind"] in {
+        INTERVAL_SUMMARY_KIND, DEATHS_BY_YEAR_KIND,
+        MEDIAN_AGE_BY_YEAR_KIND, AGE_AT_DEATH_KIND, DEATHS_TABLE_KIND,
+    }]
+    selected[0] = dict(selected[0], kind="summary-completeness", filename="summary-completeness.png")
+    legacy_dir = tmp_path / "summary-assets"
+    legacy_dir.mkdir()
+    for asset in selected:
+        original = manifest_path.parent / ("interval-summary.png" if asset["filename"] == "summary-completeness.png" else asset["filename"])
+        shutil.copy2(original, legacy_dir / asset["filename"])
+    legacy_manifest = dict(manifest, renderer_version=2, assets=selected)
+    legacy_manifest_path = legacy_dir / "render-manifest.json"
+    legacy_manifest_path.write_text(json.dumps(legacy_manifest) + "\n")
+    result = prepare_report_post(source, legacy_manifest_path, tmp_path / "state")
+    assert result.ok
+
+    malformed = dict(legacy_manifest, assets=[dict(item) for item in selected])
+    malformed["assets"][1]["kind"] = INDIVIDUAL_AGES_KIND
+    malformed_dir = tmp_path / "malformed-assets"
+    malformed_dir.mkdir()
+    for asset in selected:
+        shutil.copy2(legacy_dir / asset["filename"], malformed_dir / asset["filename"])
+    malformed_path = malformed_dir / "render-manifest.json"
+    malformed_path.write_text(json.dumps(malformed) + "\n")
+    rejected = prepare_report_post(source, malformed_path, tmp_path / "malformed-state")
+    assert not rejected.ok
+    assert "legacy" in (rejected.error_summary or "") or "layout" in (rejected.error_summary or "")
 
 
 def test_enriched_report_caption_uses_completeness_and_age_extremes(tmp_path):
