@@ -294,6 +294,56 @@ jobs:
           echo "assets_dir=${assets_dir}" >> "${GITHUB_OUTPUT}"
           echo "manifest_path=${assets_dir}/render-manifest.json" >> "${GITHUB_OUTPUT}"
 
+      # Keep this small diagnostic while validating the adaptive renderer on
+      # hosted runners.  It contains no credentials or canonical data.
+      - name: Diagnose rendered asset contract
+        env:
+          REPORT_PATH: ${{ steps.report.outputs.report_path }}
+          MANIFEST_PATH: ${{ steps.render.outputs.manifest_path }}
+        run: |
+          set -euo pipefail
+          echo "source_commit=$(git rev-parse HEAD)"
+          command -v python
+          command -v wiki-philosopher-render-death-report
+          command -v wiki-philosopher-prepare-report-post
+          REPORT_PATH="${REPORT_PATH}" MANIFEST_PATH="${MANIFEST_PATH}" python - <<'PY'
+          import inspect
+          import json
+          import os
+          from pathlib import Path
+
+          import wiki_philosopher_bot
+          from wiki_philosopher_bot import death_report_rendering as rendering
+          from wiki_philosopher_bot import report_post_outbox as outbox
+
+          print("package_file={}".format(wiki_philosopher_bot.__file__))
+          print("renderer_file={}".format(rendering.__file__))
+          print("outbox_file={}".format(outbox.__file__))
+          print("renderer_interval_summary_kind={}".format(rendering.INTERVAL_SUMMARY_KIND))
+          print("outbox_interval_summary_kind={}".format(outbox.INTERVAL_SUMMARY_KIND))
+          print("outbox_media_validator_source:")
+          print(inspect.getsource(outbox._validate_media_layout))
+
+          manifest_path = Path(os.environ["MANIFEST_PATH"])
+          manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+          print("manifest_renderer_version={}".format(manifest.get("renderer_version")))
+          print("manifest_assets:")
+          for index, asset in enumerate(manifest.get("assets", []), 1):
+              print("{} filename={} kind={}".format(index, asset.get("filename"), asset.get("kind")))
+
+          try:
+              _, _, _, _, _, checked = outbox._validate_manifest(
+                  Path(os.environ["REPORT_PATH"]), manifest_path
+              )
+              print("validator_media:")
+              for index, (asset, _, _) in enumerate(checked, 1):
+                  print("{} filename={} kind={}".format(index, asset.get("filename"), asset.get("kind")))
+              print("validator_first_media_kind={}".format(checked[0][0].get("kind")))
+          except Exception as error:
+              print("validator_error_type={}".format(type(error).__name__))
+              print("validator_error={}".format(error))
+          PY
+
       - id: prepare
         name: Freeze one pending report-post bundle without Telegram
         env:
