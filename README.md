@@ -192,6 +192,11 @@ the workflow fails before it creates a report-post attempt. The renderer
 refuses intervals that would require more than ten Telegram media items, so
 longer ranges may need a narrower month interval.
 
+Report images and the Telegram preview use readable month names for complete
+month intervals (and a year alone for a complete calendar year), while the
+report JSON keeps exact ISO dates. Direct arbitrary-date reports retain exact
+date labels. Short reports use compact, content-sized summary and table images.
+
 The workflow reads `database.jsonl` from the private authoritative repository,
 generates a read-only report and PNG assets in runner-temporary storage, then
 freezes the exact report, manifest, caption, and media in

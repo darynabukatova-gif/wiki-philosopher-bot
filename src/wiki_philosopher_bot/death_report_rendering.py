@@ -13,7 +13,10 @@ import calendar
 from pathlib import Path
 from statistics import median
 from wiki_philosopher_bot.date_policy import completed_calendar_years
-from wiki_philosopher_bot.report_formatting import compact_percentage, mean_age, median_age
+from wiki_philosopher_bot.report_formatting import (
+    compact_percentage, format_report_interval_compact,
+    format_report_interval_long, mean_age, median_age,
+)
 
 RENDERER_VERSION = 2
 TELEGRAM_MEDIA_GROUP_MAX = 10
@@ -31,6 +34,27 @@ MEDIAN_AGE_BY_YEAR_KIND = "median-age-by-year"
 INDIVIDUAL_AGES_KIND = "individual-ages"
 AGE_AT_DEATH_KIND = "age-at-death"
 DEATHS_TABLE_KIND = "deaths-table"
+
+# Normalized axes coordinates are deliberately explicit so compact canvases do
+# not collapse the title, subtitle, and first content section into one another.
+SUMMARY_LAYOUT = {
+    "title": 0.96,
+    "subtitle": 0.84,
+    "section": 0.66,
+    "count": 0.60,
+    "ages": 0.48,
+    "statistics": 0.40,
+    "extremes": 0.27,
+    "youngest": 0.20,
+    "oldest": 0.13,
+}
+TABLE_LAYOUT = {
+    "title": 0.97,
+    "subtitle": 0.87,
+    "header": 0.75,
+    "content_gap": 0.07,
+    "bottom": 0.035,
+}
 
 
 class DeathReportRenderError(ValueError):
@@ -291,9 +315,10 @@ def _sha256(path):
     return digest.hexdigest()
 
 
-def _interval_text(inputs):
+def _interval_text(inputs, *, compact=False):
     interval = inputs["interval"]
-    return "{} through {} (inclusive)".format(interval["from"], interval["to"])
+    formatter = format_report_interval_compact if compact else format_report_interval_long
+    return formatter(interval["from"], interval["to"])
 
 
 def _render_interval_summary(pyplot, inputs, destination):
@@ -308,12 +333,12 @@ def _render_interval_summary(pyplot, inputs, destination):
     age_denominator = exact or 0
     age_pct = (ages * 100.0 / exact) if exact else None
     lines = [
-        (0.98, "Philosopher deaths", 22, "#1f3b53", True),
-        (0.925, _interval_text(inputs), 12, "#555555", False),
-        (0.80, "EXACT DEATHS", 10, "#315b7d", True),
-        (0.755, str(exact), 25, "#111111", True),
-        (0.67, "Exact ages available: {} / {} ({})".format(ages, age_denominator, compact_percentage(age_pct, missing="—")), 12, "#222222", False),
-        (0.625, "Median age: {}    Mean age: {}".format(median_age(statistics["median"], missing="—"), mean_age(statistics["mean"], missing="—")), 12, "#222222", False),
+        (SUMMARY_LAYOUT["title"], "Philosopher deaths", 22, "#1f3b53", True),
+        (SUMMARY_LAYOUT["subtitle"], _interval_text(inputs), 12, "#555555", False),
+        (SUMMARY_LAYOUT["section"], "EXACT DEATHS", 10, "#315b7d", True),
+        (SUMMARY_LAYOUT["count"], str(exact), 25, "#111111", True),
+        (SUMMARY_LAYOUT["ages"], "Exact ages available: {} / {} ({})".format(ages, age_denominator, compact_percentage(age_pct, missing="—")), 12, "#222222", False),
+        (SUMMARY_LAYOUT["statistics"], "Median age: {}    Mean age: {}".format(median_age(statistics["median"], missing="—"), mean_age(statistics["mean"], missing="—")), 12, "#222222", False),
     ]
     extremes = inputs.get("age_extremes", {})
     youngest, oldest = extremes.get("youngest"), extremes.get("oldest")
@@ -325,13 +350,12 @@ def _render_interval_summary(pyplot, inputs, destination):
         if not isinstance(name, str) or not name.strip() or not isinstance(age, (int, float)) or isinstance(age, bool):
             return "{}: unavailable".format(label)
         return "{}: {} — {}".format(label, name, median_age(age, missing="—"))
-    lines.append((0.43, "AGE EXTREMES", 10, "#315b7d", True))
-    lines.append((0.37, extreme_text("Youngest", youngest), 11, "#222222", False))
-    lines.append((0.30, extreme_text("Oldest", oldest), 11, "#222222", False))
+    lines.append((SUMMARY_LAYOUT["extremes"], "AGE EXTREMES", 10, "#315b7d", True))
+    lines.append((SUMMARY_LAYOUT["youngest"], extreme_text("Youngest", youngest), 11, "#222222", False))
+    lines.append((SUMMARY_LAYOUT["oldest"], extreme_text("Oldest", oldest), 11, "#222222", False))
     for y, text, size, color, bold in lines:
         axes.text(0.02, y, text, fontsize=size, color=color, fontweight="bold" if bold else "normal", va="top")
     try:
-        figure.tight_layout()
         return _atomic_figure_save(figure, destination), {
             "exact_deaths": exact,
             "exact_ages": ages,
@@ -376,7 +400,7 @@ def _render_deaths_by_month(pyplot, inputs, destination):
     values = [counts[month] for month in months]
     figure, axes = pyplot.subplots(figsize=(max(10, len(months) * 0.65), 6.25))
     try:
-        axes.set_title("Confirmed philosopher deaths by month\n{}".format(_interval_text(inputs)))
+        axes.set_title("Confirmed philosopher deaths by month\n{}".format(_interval_text(inputs, compact=True)))
         if months:
             positions = list(range(len(months)))
             axes.bar(positions, values, width=0.7, color="#315b7d")
@@ -404,7 +428,7 @@ def _render_median_age_by_year(pyplot, inputs, destination):
     sample_sizes = [item.get("exact_ages_available", 0) for item in yearly]
     figure, axes = pyplot.subplots(figsize=(10, 6.25))
     try:
-        axes.set_title("Median exact age at death by year\n{}".format(_interval_text(inputs)))
+        axes.set_title("Median exact age at death by year\n{}".format(_interval_text(inputs, compact=True)))
         positions = list(range(len(years)))
         points = [(x, median_value) for x, median_value in zip(positions, medians) if median_value is not None]
         if points:
@@ -432,7 +456,7 @@ def _render_deaths_by_year(pyplot, inputs, destination):
     counts = [inputs["deaths_by_year"][year] for year in years]
     figure, axes = pyplot.subplots(figsize=(10, 6.25))
     try:
-        axes.set_title("Confirmed philosopher deaths\n{}".format(_interval_text(inputs)))
+        axes.set_title("Confirmed philosopher deaths\n{}".format(_interval_text(inputs, compact=True)))
         if years:
             positions = list(range(len(years)))
             axes.bar(positions, counts, width=0.7, color="#315b7d")
@@ -475,7 +499,7 @@ def _render_age_at_death(pyplot, inputs, destination):
     statistics = inputs["age_statistics"]
     figure, axes = pyplot.subplots(figsize=(10, 6.25))
     try:
-        title = "Exact age at death\n{}".format(_interval_text(inputs))
+        title = "Exact age at death\n{}".format(_interval_text(inputs, compact=True))
         if ages:
             title += "\nn={} · mean {:.1f} · median {:g}".format(
                 len(ages), statistics["mean"], statistics["median"],
@@ -524,7 +548,7 @@ def _render_individual_ages(pyplot, inputs, destination):
     figure_height = max(4.5, 1.2 + len(rows) * 0.48)
     figure, axes = pyplot.subplots(figsize=(10, figure_height))
     try:
-        axes.set_title("Individual exact ages at death\n{}".format(_interval_text(inputs)))
+        axes.set_title("Individual exact ages at death\n{}".format(_interval_text(inputs, compact=True)))
         if ages:
             positions = list(range(len(ages)))
             axes.scatter(ages, positions, color="#6c4675", s=55, zorder=3)
@@ -566,21 +590,22 @@ def _render_table_page(pyplot, inputs, rows, destination, page, total_pages):
     wrapped = [(_wrapped_title(row["display_title"]), row) for row in rows]
     row_units = [max(1, len(lines)) for lines, _ in wrapped]
     total_units = max(1, sum(row_units))
-    figure_height = max(3.8, 2.0 + total_units * 0.42)
+    # Reserve a fixed header region; only the body grows with wrapped rows.
+    figure_height = 2.8 + total_units * 0.38
     figure = pyplot.figure(figsize=(11.5, figure_height))
     axes = figure.add_axes((0.035, 0.035, 0.93, 0.93))
     axes.set_xlim(0, 1)
     axes.set_ylim(0, 1)
     axes.axis("off")
     try:
-        axes.text(0, 0.985, "Confirmed philosopher deaths", fontsize=18,
+        axes.text(0, TABLE_LAYOUT["title"], "Confirmed philosopher deaths", fontsize=18,
                   fontweight="bold", va="top")
         axes.text(
-            0, 0.945,
+            0, TABLE_LAYOUT["subtitle"],
             "{} · page {} of {}".format(_interval_text(inputs), page, total_pages),
             fontsize=11, color="#444444", va="top",
         )
-        header_top = 0.885
+        header_top = TABLE_LAYOUT["header"]
         axes.add_patch(pyplot.Rectangle(
             (0, header_top - 0.04), 1, 0.045, color="#dfe8ef",
             transform=axes.transAxes,
@@ -589,8 +614,8 @@ def _render_table_page(pyplot, inputs, rows, destination, page, total_pages):
         axes.text(0.205, header_top, "Philosopher", fontweight="bold", va="top")
         axes.text(0.97, header_top, "Age", fontweight="bold", ha="right", va="top")
 
-        content_top = header_top - 0.055
-        content_bottom = 0.025
+        content_top = header_top - TABLE_LAYOUT["content_gap"]
+        content_bottom = TABLE_LAYOUT["bottom"]
         unit_height = (content_top - content_bottom) / total_units
         current_y = content_top
         for index, ((lines, row), units) in enumerate(zip(wrapped, row_units)):

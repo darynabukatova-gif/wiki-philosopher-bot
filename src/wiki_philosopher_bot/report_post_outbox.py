@@ -20,7 +20,9 @@ from wiki_philosopher_bot.death_report_rendering import (
     MEDIAN_AGE_BY_YEAR_KIND, INDIVIDUAL_AGES_KIND,
     AGE_AT_DEATH_KIND, DEATHS_TABLE_KIND,
 )
-from wiki_philosopher_bot.report_formatting import compact_percentage, mean_age, median_age
+from wiki_philosopher_bot.report_formatting import (
+    compact_percentage, format_report_interval_long, mean_age, median_age,
+)
 from wiki_philosopher_bot.telegram_bot import (TELEGRAM_OUTCOME_CONFIRMED_SUCCESS,
     TELEGRAM_OUTCOME_DEFINITE_REJECTION, send_media_group_to_chat)
 
@@ -320,8 +322,8 @@ def _caption(normalized):
         and "youngest" in extremes
         and "oldest" in extremes
     )
-    heading = "<b>Philosopher deaths: {}–{}</b>".format(
-        html.escape(interval["from"]), html.escape(interval["to"])
+    heading = "<b>Philosopher deaths: {}</b>".format(
+        html.escape(format_report_interval_long(interval["from"], interval["to"]))
     )
     if rich:
         exact_deaths = len(normalized["rows"])
@@ -426,7 +428,10 @@ def verify_bundle(bundle, attempt=None):
     if attempt["media"] != expected: raise ReportPostError("stored media ordering does not match frozen manifest")
     if attempt["exact_deaths"] != len(normalized["rows"]) or attempt["exact_ages"] != len(normalized["ages"]): raise ReportPostError("stored report counts do not match frozen report")
     if attempt["interval"] != normalized["interval"]: raise ReportPostError("stored interval does not match frozen report")
-    if attempt["caption_html"] != _caption(normalized): raise ReportPostError("stored caption does not match frozen report")
+    # The caption is immutable frozen presentation data.  Do not regenerate it
+    # while reading an existing bundle: historical attempts may predate the
+    # current interval-label formatter.  Its exact bytes remain protected by
+    # the posting fingerprint below.
     expected_fingerprint=_fingerprint(attempt["source_report_sha256"],attempt["render_manifest_sha256"],attempt["caption_html"],attempt["media"])
     if attempt["posting_fingerprint"] != expected_fingerprint: raise ReportPostError("posting fingerprint does not match frozen payload")
     if attempt["content_fingerprint"] != content_fingerprint(normalized): raise ReportPostError("content fingerprint does not match frozen report")

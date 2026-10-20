@@ -19,6 +19,8 @@ from wiki_philosopher_bot.death_report_rendering import (
     render_historical_death_report,
     validate_historical_death_report,
     TELEGRAM_MEDIA_GROUP_MAX,
+    SUMMARY_LAYOUT,
+    TABLE_LAYOUT,
 )
 
 
@@ -394,6 +396,14 @@ def test_short_summary_and_table_pages_have_compact_deterministic_heights(tmp_pa
         assert table["width"] > 0 and table["height"] > 0
     assert summary_heights[0] < 820
     assert table_heights[0] < table_heights[1] < table_heights[2]
+
+
+def test_compact_layout_reserves_positive_header_gaps():
+    assert SUMMARY_LAYOUT["title"] > SUMMARY_LAYOUT["subtitle"] > SUMMARY_LAYOUT["section"]
+    assert SUMMARY_LAYOUT["title"] - SUMMARY_LAYOUT["subtitle"] > 0
+    assert SUMMARY_LAYOUT["subtitle"] - SUMMARY_LAYOUT["section"] > 0
+    assert TABLE_LAYOUT["title"] > TABLE_LAYOUT["subtitle"] > TABLE_LAYOUT["header"]
+    assert TABLE_LAYOUT["header"] - TABLE_LAYOUT["content_gap"] > TABLE_LAYOUT["bottom"]
 
 
 def test_short_interval_boundary_at_two_completed_calendar_years_uses_years(tmp_path):

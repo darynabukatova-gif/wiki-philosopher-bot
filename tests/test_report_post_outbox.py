@@ -37,7 +37,7 @@ def test_prepare_freezes_complete_bundle_without_changing_sources(rendered):
     assert result.ok and result.ending_state=='pending'; bundle=state/result.attempt_id; attempt=load_attempt(bundle)
     assert [x['kind'] for x in attempt['media']]==['interval-summary','deaths-by-year','individual-ages','deaths-table','deaths-table']
     assert [x['position'] for x in attempt['media']]==list(range(1, len(attempt['media']) + 1))
-    assert '<b>Philosopher deaths: 2019-09-26–2026-09-26</b>' in attempt['caption_html']
+    assert '<b>Philosopher deaths: 2019-09-26 through 2026-09-26 (inclusive)</b>' in attempt['caption_html']
     assert source.read_bytes()==before[0] and manifest.read_bytes()==before[1]
     assert verify_bundle(bundle,attempt) and set(x.name for x in bundle.iterdir())=={'attempt.json','source-report.json','render-manifest.json',*[x['filename'] for x in attempt['media']]}
 
@@ -242,7 +242,7 @@ def test_enriched_report_caption_uses_completeness_and_age_extremes(tmp_path):
     assert result.ok
     caption = load_attempt(tmp_path / "state" / result.attempt_id)["caption_html"]
     assert caption == (
-        "<b>Philosopher deaths: 2019-09-26–2026-09-26</b>\n\n"
+        "<b>Philosopher deaths: 2019-09-26 through 2026-09-26 (inclusive)</b>\n\n"
         "Confirmed exact deaths: 9\n"
         "Exact ages available: 8/9 (88.9%)\n"
         "Median age: 82.5\n"
@@ -296,6 +296,26 @@ def test_rich_caption_percentage_and_age_number_formatting(percentage, expected)
     assert "Exact ages available: 1/1 ({})".format(expected) in caption
     assert "Mean age: 84.1" in caption
     assert "Median age: 85.5" in caption
+
+
+def test_rich_caption_uses_human_readable_complete_month_interval():
+    normalized = {
+        "interval": {"from": "2025-10-01", "to": "2026-09-30"},
+        "rows": [{"display_title": "Name", "title": "Name", "age_at_death": 85, "death_date": "2026-01-01"}],
+        "ages": [85],
+        "age_statistics": {"mean": 85.0, "median": 85},
+        "data_completeness": {
+            "exact_age_coverage_for_interval_pct": 100.0,
+            "exact_death_date_coverage_pct": 100.0,
+        },
+        "age_extremes": {
+            "youngest": {"display_title": "Name", "age": 85},
+            "oldest": {"display_title": "Name", "age": 85},
+        },
+    }
+    caption = _caption(normalized)
+    assert "<b>Philosopher deaths: October 2025 – September 2026</b>" in caption
+    assert "2025-10-01" not in caption
 
 
 def test_enriched_caption_rejects_overlong_caption_before_bundle_creation(tmp_path):
