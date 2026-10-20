@@ -18,12 +18,19 @@ from wiki_philosopher_bot.channel_publication_outbox import (
     source_payload_fingerprint,
     validate_publication,
     validate_publication_bundle,
+    prepare_channel_publication_from_recent_death,
+    discover_sent_recent_death_sources,
+    RECENT_DEATH_SOURCE_TYPE,
 )
 from wiki_philosopher_bot.death_report_rendering import render_historical_death_report
 from wiki_philosopher_bot.report_post_outbox import (
     load_attempt,
     prepare_report_post,
     reconcile_report_post,
+)
+from wiki_philosopher_bot.database_schema import (
+    make_empty_database_entry, make_pending_recent_death_notification,
+    serialize_database_entries, transition_recent_death_notification,
 )
 
 
@@ -296,5 +303,90 @@ def test_no_database_or_network_dependency_and_unsupported_source(tmp_path):
         state_root=tmp_path / "channel",
     )
     assert not result.ok
-    assert result.error_kind == "unsupported_source_type"
+    assert result.error_kind == "missing_database"
     assert not (tmp_path / "channel").exists()
+
+
+def _recent_database(tmp_path, notifications):
+    Path(tmp_path).mkdir(parents=True, exist_ok=True)
+    entry = make_empty_database_entry("Recent Philosopher")
+    entry["wikidata"].update({"status": "available", "qid": "Q123"})
+    entry["recent_death_notifications"] = notifications
+    path = tmp_path / "database.jsonl"
+    path.write_bytes(serialize_database_entries([entry]))
+    return path
+
+
+def _sent_notification(identifier, when, message="<b>Recent Philosopher</b>\nDied: 1 January 2026"):
+    item = make_pending_recent_death_notification(
+        "Recent Philosopher", "Q123", "2026-01-01", message,
+        notification_id=identifier, now=when,
+    )
+    return transition_recent_death_notification(item, "sent", now=when, telegram_message_id=987)
+
+
+def test_recent_death_prepare_freezes_exact_text_and_survives_source_removal(tmp_path):
+    identifier = "22345678-1234-4234-8234-123456789abc"
+    when = datetime(2026, 9, 26, 12, tzinfo=timezone.utc)
+    database = _recent_database(tmp_path, [_sent_notification(identifier, when)])
+    state_root = tmp_path / "channel"
+    result = prepare_channel_publication_from_recent_death(database, state_root)
+    assert result.ok
+    bundle = state_root / result.publication_id
+    attempt = load_publication(state_root, result.publication_id)[0]
+    assert attempt["source_type"] == RECENT_DEATH_SOURCE_TYPE
+    assert attempt["payload_kind"] == "text"
+    assert attempt["caption_html"] is None
+    assert attempt["media"] == []
+    assert attempt["message_html"].startswith("<b>Recent Philosopher</b>")
+    assert result.telegram_called is False
+    database.unlink()
+    validate_publication_bundle(bundle, attempt)
+
+
+def test_recent_death_source_states_and_message_validation(tmp_path):
+    when = datetime(2026, 9, 26, tzinfo=timezone.utc)
+    for state in ("pending", "failed", "unknown", "cancelled"):
+        item = make_pending_recent_death_notification("Recent Philosopher", "Q123", "2026-01-01", "hello", notification_id="32345678-1234-4234-8234-123456789abc", now=when)
+        if state == "failed":
+            item = transition_recent_death_notification(item, state, now=when, error_kind="telegram_rejected", error_summary="rejected")
+        elif state == "unknown":
+            item = transition_recent_death_notification(item, state, now=when, error_kind="transport_ambiguous", error_summary="unknown")
+        elif state == "cancelled":
+            item = transition_recent_death_notification(item, state, now=when, resolution_note="cancelled")
+        result = prepare_channel_publication_from_recent_death(_recent_database(tmp_path / state, [item]), tmp_path / (state + "-state"), source_id=item["notification_id"])
+        assert not result.ok
+    sent = _sent_notification("42345678-1234-4234-8234-123456789abc", when)
+    sent["telegram_message_id"] = None
+    result = prepare_channel_publication_from_recent_death(_recent_database(tmp_path / "missing-id", [sent]), tmp_path / "missing-id-state")
+    assert not result.ok
+
+
+def test_recent_death_latest_unpublished_and_cancelled_allows_retry(tmp_path):
+    base = datetime(2026, 9, 26, tzinfo=timezone.utc)
+    ids = ["52345678-1234-4234-8234-123456789abc", "62345678-1234-4234-8234-123456789abc", "72345678-1234-4234-8234-123456789abc"]
+    notifications = [_sent_notification(identifier, base.replace(hour=index)) for index, identifier in enumerate(ids)]
+    database = _recent_database(tmp_path / "latest", notifications)
+    state = tmp_path / "latest-state"
+    first = prepare_channel_publication_from_recent_death(database, state)
+    assert first.source_id == ids[2]
+    path = state / first.publication_id / "attempt.json"
+    attempt = json.loads(path.read_text())
+    attempt["state"] = "sent"
+    attempt["telegram_message_ids"] = [1]
+    path.write_text(json.dumps(attempt))
+    second = prepare_channel_publication_from_recent_death(database, state)
+    assert second.source_id == ids[1]
+
+
+def test_recent_death_cross_source_identity_does_not_collide(tmp_path):
+    # The source type is part of the publication identity and duplicate checks.
+    identifier = "82345678-1234-4234-8234-123456789abc"
+    report_root, _ = _source(tmp_path / "report", source_id=identifier)
+    state = tmp_path / "cross-state"
+    stat = prepare_channel_publication_from_report(report_root, state, source_id=identifier)
+    assert stat.ok
+    _mark_publication_sent(state / stat.publication_id)
+    recent = _recent_database(tmp_path / "cross-db", [_sent_notification(identifier, datetime(2026, 9, 26, tzinfo=timezone.utc))])
+    result = prepare_channel_publication_from_recent_death(recent, state, source_id=identifier)
+    assert result.ok

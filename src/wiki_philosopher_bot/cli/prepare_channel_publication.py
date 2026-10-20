@@ -1,4 +1,4 @@
-"""Prepare a statistical-report channel publication without Telegram."""
+"""Prepare a frozen channel publication without Telegram."""
 
 import argparse
 import json
@@ -12,11 +12,12 @@ from wiki_philosopher_bot.config import CHANNEL_PUBLICATION_STATE_ROOT, REPORT_P
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(
-        description="Freeze an already-sent private statistical report for later channel publication."
+        description="Freeze an already-sent private report or recent-death notification for later channel publication."
     )
     parser.add_argument("--source-type", required=True)
     parser.add_argument("--source-id", help="exact report-post attempt UUID")
     parser.add_argument("--report-post-root", default=REPORT_POST_STATE_ROOT)
+    parser.add_argument("--database", help="canonical database path (required for recent_death)")
     parser.add_argument("--state-root", default=CHANNEL_PUBLICATION_STATE_ROOT)
     parser.add_argument("--result-json", help="write machine-readable result JSON")
     return parser.parse_args(argv)
@@ -48,6 +49,7 @@ def main(argv=None):
         source_id=args.source_id,
         report_post_root=args.report_post_root,
         state_root=args.state_root,
+        database_path=args.database,
     )
     report = result.as_report()
     if args.result_json:

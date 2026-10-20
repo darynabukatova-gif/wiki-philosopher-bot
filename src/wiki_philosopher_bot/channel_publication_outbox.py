@@ -24,11 +24,18 @@ from wiki_philosopher_bot.report_post_outbox import (
     load_attempt as load_report_post_attempt,
     verify_bundle as verify_report_post_bundle,
 )
+from wiki_philosopher_bot.cache import load_database
+from wiki_philosopher_bot.database_schema import (
+    recent_death_notifications,
+    validate_recent_death_notification,
+)
 
 SCHEMA_VERSION = 1
 SOURCE_TYPE = "statistical_report"
-SUPPORTED_SOURCE_TYPES = frozenset((SOURCE_TYPE,))
+RECENT_DEATH_SOURCE_TYPE = "recent_death"
+SUPPORTED_SOURCE_TYPES = frozenset((SOURCE_TYPE, RECENT_DEATH_SOURCE_TYPE))
 PAYLOAD_KIND = "media_group"
+TEXT_PAYLOAD_KIND = "text"
 STATES = frozenset(("pending", "sent", "failed", "unknown", "cancelled"))
 UNRESOLVED_STATES = frozenset(("pending", "failed", "unknown"))
 TRANSITIONS = {
@@ -149,24 +156,26 @@ def _media_identity(media):
     ]
 
 
-def source_payload_fingerprint(caption_html: str, media: list[dict]) -> str:
+def source_payload_fingerprint(caption_html=None, media=None, *, message_html=None, payload_kind=None) -> str:
     """Identify the exact caption and ordered frozen media content."""
-    return _json_fingerprint({
-        "caption_html": caption_html,
-        "media": _media_identity(media),
-    })
+    if payload_kind == TEXT_PAYLOAD_KIND or message_html is not None:
+        return _json_fingerprint({"payload_kind": TEXT_PAYLOAD_KIND, "message_html": message_html})
+    return _json_fingerprint({"caption_html": caption_html, "media": _media_identity(media or [])})
 
 
 def publication_fingerprint(attempt: dict) -> str:
     """Identify this source's prepared publication, excluding volatile fields."""
-    return _json_fingerprint({
+    value = {
         "source_type": attempt.get("source_type"),
         "source_id": attempt.get("source_id"),
         "source_payload_fingerprint": attempt.get("source_payload_fingerprint"),
         "payload_kind": attempt.get("payload_kind"),
         "caption_html": attempt.get("caption_html"),
         "media": _media_identity(attempt.get("media", [])),
-    })
+    }
+    if attempt.get("payload_kind") == TEXT_PAYLOAD_KIND:
+        value["message_html"] = attempt.get("message_html")
+    return _json_fingerprint(value)
 
 
 def is_legal_transition(start_state: str, end_state: str) -> bool:
@@ -178,13 +187,15 @@ def validate_publication(attempt: dict) -> dict:
         raise ChannelPublicationError("unsupported channel-publication schema")
     if not _valid_uuid(attempt.get("publication_id")):
         raise ChannelPublicationError("publication_id must be a canonical UUID")
-    if attempt.get("source_type") not in SUPPORTED_SOURCE_TYPES:
+    source_type = attempt.get("source_type")
+    if source_type not in SUPPORTED_SOURCE_TYPES:
         raise ChannelPublicationError("unsupported source_type")
     if not _valid_uuid(attempt.get("source_id")):
         raise ChannelPublicationError("source_id must be a canonical UUID")
     if attempt.get("state") not in STATES:
         raise ChannelPublicationError("invalid publication state")
-    if attempt.get("payload_kind") != PAYLOAD_KIND:
+    payload_kind = attempt.get("payload_kind")
+    if (source_type == SOURCE_TYPE and payload_kind != PAYLOAD_KIND) or (source_type == RECENT_DEATH_SOURCE_TYPE and payload_kind != TEXT_PAYLOAD_KIND):
         raise ChannelPublicationError("unsupported payload_kind")
     for field_name in ("created_at", "state_changed_at"):
         if not isinstance(attempt.get(field_name), str) or not attempt[field_name]:
@@ -194,13 +205,23 @@ def validate_publication(attempt: dict) -> dict:
             raise ChannelPublicationError("{} must be a SHA-256 hex string".format(field_name))
 
     caption = attempt.get("caption_html")
-    if not isinstance(caption, str) or not caption:
-        raise ChannelPublicationError("caption_html must be a non-empty string")
-    if attempt.get("message_html") is not None:
-        raise ChannelPublicationError("media publication cannot contain message_html")
     media = attempt.get("media")
-    if not isinstance(media, list) or not media or len(media) > MAX_MEDIA_ITEMS:
-        raise ChannelPublicationError("media must contain 1 to {} items".format(MAX_MEDIA_ITEMS))
+    message_html = attempt.get("message_html")
+    if source_type == SOURCE_TYPE:
+        if not isinstance(caption, str) or not caption:
+            raise ChannelPublicationError("caption_html must be a non-empty string")
+        if message_html is not None:
+            raise ChannelPublicationError("media publication cannot contain message_html")
+        if not isinstance(media, list) or not media or len(media) > MAX_MEDIA_ITEMS:
+            raise ChannelPublicationError("media must contain 1 to {} items".format(MAX_MEDIA_ITEMS))
+    else:
+        if caption is not None:
+            raise ChannelPublicationError("text publication caption_html must be null")
+        if not isinstance(message_html, str) or not message_html:
+            raise ChannelPublicationError("message_html must be a non-empty string")
+        if media != []:
+            raise ChannelPublicationError("text publication media must be empty")
+        media = []
     names = set()
     for expected_position, item in enumerate(media, 1):
         if not isinstance(item, dict) or item.get("position") != expected_position:
@@ -225,15 +246,16 @@ def validate_publication(attempt: dict) -> dict:
         for value in message_ids
     ):
         raise ChannelPublicationError("telegram_message_ids must contain positive integers")
-    if attempt["state"] == "sent" and len(message_ids) != len(media):
-        raise ChannelPublicationError("sent publication requires one ID per media item")
+    if attempt["state"] == "sent" and len(message_ids) != (len(media) if source_type == SOURCE_TYPE else 1):
+        raise ChannelPublicationError("sent publication requires complete message IDs")
     if attempt["state"] != "sent" and message_ids:
         raise ChannelPublicationError("non-sent publication cannot contain message IDs")
     for field_name in ("error_kind", "error_summary", "resolution_note"):
         if attempt.get(field_name) is not None and not isinstance(attempt[field_name], str):
             raise ChannelPublicationError("{} must be a string or null".format(field_name))
 
-    if attempt["source_payload_fingerprint"] != source_payload_fingerprint(caption, media):
+    expected_source_fp = source_payload_fingerprint(caption, media, message_html=message_html, payload_kind=payload_kind)
+    if attempt["source_payload_fingerprint"] != expected_source_fp:
         raise ChannelPublicationError("source_payload_fingerprint does not match payload")
     if attempt["publication_fingerprint"] != publication_fingerprint(attempt):
         raise ChannelPublicationError("publication_fingerprint does not match payload")
@@ -324,6 +346,95 @@ def _all_eligible_sources(report_post_root):
             "payload": payload,
         })
     return sources
+
+
+def _load_recent_database(database_path):
+    path = Path(database_path)
+    if not path.is_file():
+        raise ChannelPublicationError("recent-death database does not exist")
+    try:
+        return load_database(path.name, str(path.parent))
+    except (OSError, ValueError) as error:
+        raise ChannelPublicationError("recent-death database is invalid: {}".format(error)) from error
+
+
+def _recent_notification_sources(database):
+    """Return valid sent notifications, rejecting ambiguous/corrupt records."""
+    by_id = {}
+    for title, entry in database.items():
+        for notification in recent_death_notifications(entry):
+            errors = validate_recent_death_notification(notification)
+            if errors:
+                raise ChannelPublicationError("invalid recent-death notification for {}: {}".format(title, "; ".join(errors)))
+            if notification.get("title") != title:
+                raise ChannelPublicationError("recent-death notification title does not match canonical record")
+            stored_qid = (entry.get("wikidata") or {}).get("qid")
+            if stored_qid and notification.get("qid") != stored_qid:
+                raise ChannelPublicationError("recent-death notification QID does not match canonical record")
+            identifier = notification["notification_id"]
+            if not _valid_uuid(identifier):
+                raise ChannelPublicationError("recent-death notification_id must be a canonical UUID")
+            by_id.setdefault(identifier, []).append((title, notification))
+    if any(len(matches) != 1 for matches in by_id.values()):
+        raise ChannelPublicationError("ambiguous duplicate recent-death notification_id")
+    sources = []
+    for identifier, matches in by_id.items():
+        title, notification = matches[0]
+        if notification["state"] != "sent":
+            continue
+        if not isinstance(notification.get("telegram_message_id"), int) or notification["telegram_message_id"] <= 0:
+            raise ChannelPublicationError("sent recent-death notification lacks a positive Telegram message ID")
+        message = notification.get("message_text")
+        if not isinstance(message, str) or not message:
+            raise ChannelPublicationError("sent recent-death notification lacks message text")
+        sources.append({"source_id": identifier, "title": title, "notification": notification, "message": message})
+    return sources
+
+
+def _select_recent_source(database, source_id=None, published_source_ids=None):
+    sources = _recent_notification_sources(database)
+    if source_id is not None:
+        matches = [source for source in sources if source["source_id"] == source_id]
+        if not matches:
+            raise ChannelPublicationError("recent-death source is not an eligible sent notification")
+        return matches[0]
+    published_source_ids = published_source_ids or set()
+    sources = [source for source in sources if source["source_id"] not in published_source_ids]
+    if not sources:
+        raise ChannelPublicationError("no eligible unpublished sent recent-death notification found")
+    return max(sources, key=lambda source: (source["notification"].get("state_changed_at", ""), source["source_id"]))
+
+
+def discover_sent_recent_death_sources(database_path, state_root=None):
+    database = _load_recent_database(database_path)
+    published = set()
+    if state_root is not None:
+        published = {a["source_id"] for a in list_publications(state_root)
+                     if a["source_type"] == RECENT_DEATH_SOURCE_TYPE and a["state"] == "sent"}
+    return [source for source in _recent_notification_sources(database) if source["source_id"] not in published]
+
+
+def _existing_publication_ids(existing, source_type):
+    return {a["source_id"] for a in existing if a["source_type"] == source_type and a["state"] == "sent"}
+
+
+def _publish_bundle(root, identifier, attempt, media_payload, publish):
+    root = Path(root)
+    root.mkdir(parents=True, exist_ok=True)
+    final = root / identifier
+    if final.exists():
+        raise ChannelPublicationError("publication bundle already exists")
+    temporary = Path(tempfile.mkdtemp(prefix=".channel-publication-{}-".format(identifier), dir=str(root)))
+    try:
+        for item, payload in zip(attempt["media"], media_payload):
+            _write_bytes(temporary / item["filename"], payload["bytes"])
+        _atomic_json(temporary / "attempt.json", attempt)
+        publish(str(temporary), str(final))
+        temporary = None
+    finally:
+        if temporary is not None and temporary.exists():
+            shutil.rmtree(str(temporary))
+    return final
 
 
 def _select_source(report_post_root, state_root, source_id=None, published_source_ids=None):
@@ -432,21 +543,7 @@ def prepare_channel_publication_from_report(
         attempt["publication_fingerprint"] = publication_fingerprint(attempt)
         validate_publication(attempt)
 
-        root = Path(state_root)
-        root.mkdir(parents=True, exist_ok=True)
-        final = root / identifier
-        if final.exists():
-            raise ChannelPublicationError("publication bundle already exists")
-        temporary = Path(tempfile.mkdtemp(prefix=".channel-publication-{}-".format(identifier), dir=str(root)))
-        try:
-            for item, payload in zip(media, source["payload"]):
-                _write_bytes(temporary / item["filename"], payload["bytes"])
-            _atomic_json(temporary / "attempt.json", attempt)
-            publish(str(temporary), str(final))
-            temporary = None
-        finally:
-            if temporary is not None and temporary.exists():
-                shutil.rmtree(str(temporary))
+        final = _publish_bundle(state_root, identifier, attempt, source["payload"], publish)
 
         return ChannelPublicationResult(
             ok=True,
@@ -472,9 +569,71 @@ def prepare_channel_publication_from_report(
         )
 
 
-def prepare_channel_publication(
-    *, source_type, report_post_root, state_root, source_id=None, **kwargs
+def prepare_channel_publication_from_recent_death(
+    database_path,
+    state_root,
+    source_id=None,
+    publication_id=None,
+    now=None,
+    publish=os.replace,
 ):
+    """Freeze one already-sent recent-death notification without rebuilding it."""
+    try:
+        existing = list_publications(state_root)
+        unresolved = [a for a in existing if a["state"] in UNRESOLVED_STATES]
+        if unresolved:
+            raise ChannelPublicationError("unresolved channel publication blocks preparation")
+        published = _existing_publication_ids(existing, RECENT_DEATH_SOURCE_TYPE)
+        source = _select_recent_source(_load_recent_database(database_path), source_id, published)
+        if source["source_id"] in published:
+            raise ChannelPublicationError("recent-death source is already channel-published")
+        identifier = str(uuid.UUID(str(publication_id))) if publication_id else str(uuid.uuid4())
+        stamp = _timestamp(now)
+        attempt = {
+            "schema_version": SCHEMA_VERSION,
+            "publication_id": identifier,
+            "created_at": stamp,
+            "state": "pending",
+            "state_changed_at": stamp,
+            "source_type": RECENT_DEATH_SOURCE_TYPE,
+            "source_id": source["source_id"],
+            "payload_kind": TEXT_PAYLOAD_KIND,
+            "source_payload_fingerprint": source_payload_fingerprint(message_html=source["message"], payload_kind=TEXT_PAYLOAD_KIND),
+            "publication_fingerprint": "",
+            "caption_html": None,
+            "message_html": source["message"],
+            "media": [],
+            "telegram_message_ids": [],
+            "error_kind": None,
+            "error_summary": None,
+            "resolution_note": None,
+        }
+        attempt["publication_fingerprint"] = publication_fingerprint(attempt)
+        validate_publication(attempt)
+        final = _publish_bundle(state_root, identifier, attempt, [], publish)
+        return ChannelPublicationResult(
+            ok=True, publication_id=identifier, source_type=RECENT_DEATH_SOURCE_TYPE,
+            source_id=source["source_id"], payload_kind=TEXT_PAYLOAD_KIND,
+            ending_state="pending", source_payload_fingerprint=attempt["source_payload_fingerprint"],
+            publication_fingerprint=attempt["publication_fingerprint"], telegram_called=False,
+            persistence_succeeded=True, bundle_path=str(final),
+        )
+    except (OSError, ValueError, ChannelPublicationError) as error:
+        return ChannelPublicationResult(ok=False, source_type=RECENT_DEATH_SOURCE_TYPE,
+                                        source_id=source_id, telegram_called=False,
+                                        error_kind="validation_or_persistence", error_summary=str(error))
+
+
+def prepare_channel_publication(
+    *, source_type, report_post_root=None, state_root, source_id=None, database_path=None, **kwargs
+):
+    if source_type == RECENT_DEATH_SOURCE_TYPE:
+        if not database_path:
+            return ChannelPublicationResult(ok=False, source_type=source_type, source_id=source_id,
+                                            telegram_called=False, error_kind="missing_database",
+                                            error_summary="--database is required for recent_death")
+        return prepare_channel_publication_from_recent_death(
+            database_path=database_path, state_root=state_root, source_id=source_id, **kwargs)
     if source_type != SOURCE_TYPE:
         return ChannelPublicationResult(
             ok=False,
