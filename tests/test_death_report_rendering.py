@@ -71,6 +71,13 @@ def write_report(path, rows):
     return value
 
 
+def write_interval_report(path, rows, start, end):
+    value = report(rows)
+    value["interval"] = {"from": start, "to": end, "inclusive": True, "source": "explicit"}
+    path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n")
+    return value
+
+
 def assert_png(path):
     assert path.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
     width, height = png_dimensions(path)
@@ -142,7 +149,7 @@ def test_age_chart_uses_only_non_null_exact_ages_and_never_inferrs(tmp_path):
     manifest, _ = render_historical_death_report(
         source, output_directory=tmp_path / "assets",
     )
-    asset = next(item for item in manifest["assets"] if item["kind"] == "age-at-death")
+    asset = next(item for item in manifest["assets"] if item["kind"] == "individual-ages")
     assert asset["sample_size"] == 1
     assert asset["mean"] == 80
     assert manifest["exact_ages"] == 1
@@ -154,7 +161,7 @@ def test_zero_age_data_produces_labelled_placeholder_asset(tmp_path):
     manifest, manifest_path = render_historical_death_report(
         source, output_directory=tmp_path / "assets",
     )
-    asset = next(item for item in manifest["assets"] if item["kind"] == "age-at-death")
+    asset = next(item for item in manifest["assets"] if item["kind"] == "individual-ages")
     assert asset["sample_size"] == 0
     assert asset["zero_data_policy"] == "render-insufficient-data-placeholder"
     assert_png(manifest_path.parent / asset["filename"])
@@ -176,7 +183,7 @@ def test_single_year_chart_and_empty_interval_render(tmp_path):
         empty, output_directory=tmp_path / "empty-assets",
     )
     assert empty_manifest["exact_deaths"] == 0
-    assert len(empty_manifest["assets"]) == 5
+    assert len(empty_manifest["assets"]) == 4
     table = next(item for item in empty_manifest["assets"] if item["kind"] == "deaths-table")
     assert table["row_count"] == 0
     assert table["row_start"] == 0
@@ -309,20 +316,84 @@ def test_cli_renders_and_prints_concise_summary(tmp_path, capsys):
     ]) == 0
     output = capsys.readouterr().out
     assert "Historical death report rendered" in output
-    assert "Assets: 5" in output
+    assert "Assets: 4" in output
     assert "deaths-by-year.png" in output
     assert (destination / "render-manifest.json").exists()
 
 
 def test_renderer_v2_asset_order_and_median_manifest_metadata(tmp_path):
     source = tmp_path / "report.json"
-    write_report(source, [row("Alpha", "2024-01-01", 80), row("Beta", "2025-01-01", None)])
+    write_report(source, [row("Alpha", "2024-01-01", 80), row("Beta", "2025-01-01", 81)])
     manifest, _ = render_historical_death_report(source, output_directory=tmp_path / "assets")
     kinds = [asset["kind"] for asset in manifest["assets"]]
-    assert kinds == ["summary-completeness", "deaths-by-year", "median-age-by-year", "age-at-death", "deaths-table"]
+    assert kinds == ["interval-summary", "deaths-by-year", "median-age-by-year", "individual-ages", "deaths-table"]
     median_asset = next(asset for asset in manifest["assets"] if asset["kind"] == "median-age-by-year")
     assert median_asset["years"] == list(range(2019, 2027))
-    assert median_asset["sample_sizes"][-3:] == [1, 0, 0]
+    assert median_asset["sample_sizes"][-3:] == [1, 1, 0]
+
+
+def test_short_interval_uses_months_and_individual_ages(tmp_path):
+    source = tmp_path / "short.json"
+    rows = [
+        row("A", "2025-10-21", None), row("B", "2026-01-03", 83),
+        row("C", "2026-02-02", 94), row("D", "2026-03-04", 95),
+        row("E", "2026-03-05", 97),
+    ]
+    write_interval_report(source, rows, "2025-10-20", "2026-10-20")
+    manifest, _ = render_historical_death_report(source, output_directory=tmp_path / "assets")
+    kinds = [asset["kind"] for asset in manifest["assets"]]
+    assert kinds == ["interval-summary", "deaths-by-month", "individual-ages", "deaths-table"]
+    assert "deaths-by-year" not in kinds
+    assert "median-age-by-year" not in kinds
+    assert "age-at-death" not in kinds
+    month = manifest["assets"][1]
+    assert month["months"][:3] == ["Oct 2025", "Nov 2025", "Dec 2025"]
+    assert month["counts"][0:3] == [1, 0, 0]
+    assert month["counts"][5] == 2
+    ages = manifest["assets"][2]
+    assert ages["ages"] == [83, 94, 95, 97]
+    assert ages["titles"] == ["B", "C", "D", "E"]
+
+
+def test_short_interval_boundary_at_two_completed_calendar_years_uses_years(tmp_path):
+    source = tmp_path / "boundary.json"
+    write_interval_report(source, [row("A", "2024-01-01", 80)], "2024-01-01", "2026-01-01")
+    manifest, _ = render_historical_death_report(source, output_directory=tmp_path / "assets")
+    kinds = [asset["kind"] for asset in manifest["assets"]]
+    assert "deaths-by-year" in kinds
+    assert "deaths-by-month" not in kinds
+
+
+def test_age_distribution_switches_at_eight_exact_ages(tmp_path):
+    source = tmp_path / "eight.json"
+    rows = [row("P{}".format(index), "2024-01-{:02d}".format(index + 1), 70 + index) for index in range(8)]
+    write_report(source, rows)
+    manifest, _ = render_historical_death_report(source, output_directory=tmp_path / "assets")
+    kinds = [asset["kind"] for asset in manifest["assets"]]
+    assert "age-at-death" in kinds
+    assert "individual-ages" not in kinds
+
+
+def test_interval_summary_metadata_excludes_whole_dataset_completeness(tmp_path):
+    source = tmp_path / "summary.json"
+    value = write_report(source, [row("A", "2024-01-01", 80)])
+    value["data_completeness"] = {
+        "semantic_philosophers_total": 100,
+        "exact_death_dates_total": 40,
+        "year_only_death_dates_total": 10,
+        "unknown_death_dates_total": 50,
+        "exact_birth_dates_total": 60,
+        "exact_death_date_coverage_pct": 40.0,
+    }
+    source.write_text(json.dumps(value) + "\n")
+    manifest, _ = render_historical_death_report(source, output_directory=tmp_path / "assets")
+    summary = manifest["assets"][0]
+    assert summary["kind"] == "interval-summary"
+    assert summary["exact_deaths"] == 1
+    assert summary["exact_ages"] == 1
+    assert "exact_death_date_coverage_pct" not in summary
+    assert "unknown_death_dates_total" not in summary
+    assert "exact_birth_dates_total" not in summary
 
 
 def test_renderer_media_group_limit_rejects_without_completed_output(tmp_path):
@@ -337,7 +408,7 @@ def test_renderer_media_group_limit_rejects_without_completed_output(tmp_path):
 
 def test_renderer_media_group_limit_allows_exactly_ten_assets(tmp_path):
     source = tmp_path / "report.json"
-    rows = [row("Person {}".format(index), "2024-01-{:02d}".format(index + 1), None) for index in range(6)]
+    rows = [row("Person {}".format(index), "2024-01-{:02d}".format(index + 1), None) for index in range(7)]
     write_report(source, rows)
     manifest, _ = render_historical_death_report(source, output_directory=tmp_path / "ten-assets", rows_per_page=1)
     assert len(manifest["assets"]) == TELEGRAM_MEDIA_GROUP_MAX == 10

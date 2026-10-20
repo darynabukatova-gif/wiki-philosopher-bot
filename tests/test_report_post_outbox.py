@@ -32,7 +32,7 @@ def test_prepare_freezes_complete_bundle_without_changing_sources(rendered):
     source,manifest,state=rendered; before=(source.read_bytes(),manifest.read_bytes())
     result=prepare_report_post(source,manifest,state,attempt_id='12345678-1234-4234-8234-123456789abc')
     assert result.ok and result.ending_state=='pending'; bundle=state/result.attempt_id; attempt=load_attempt(bundle)
-    assert [x['kind'] for x in attempt['media']]==['summary-completeness','deaths-by-year','median-age-by-year','age-at-death','deaths-table','deaths-table']
+    assert [x['kind'] for x in attempt['media']]==['interval-summary','deaths-by-year','individual-ages','deaths-table','deaths-table']
     assert [x['position'] for x in attempt['media']]==list(range(1, len(attempt['media']) + 1))
     assert '<b>Philosopher deaths: 2019-09-26–2026-09-26</b>' in attempt['caption_html']
     assert source.read_bytes()==before[0] and manifest.read_bytes()==before[1]
@@ -76,8 +76,7 @@ def test_enriched_report_caption_uses_completeness_and_age_extremes(tmp_path):
         "Median age: 82.5\n"
         "Mean age: 84.1\n\n"
         "Youngest: A &lt; B &amp; C — 68\n"
-        "Oldest: Old Philosopher — 100\n\n"
-        "Exact death dates available for 40.5% of the philosopher dataset."
+        "Oldest: Old Philosopher — 100"
     )
 
 
@@ -99,7 +98,7 @@ def test_enriched_caption_sparse_data_is_readable(tmp_path):
     assert "Exact ages available: 0/0 (n/a)" in caption
     assert "Median age: n/a" in caption and "Mean age: n/a" in caption
     assert "Youngest: n/a" in caption and "Oldest: n/a" in caption
-    assert "Exact death dates available for n/a" in caption
+    assert "Exact death dates available" not in caption
 
 
 @pytest.mark.parametrize(

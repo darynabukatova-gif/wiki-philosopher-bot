@@ -14,6 +14,7 @@ import uuid
 
 from wiki_philosopher_bot.config import TELEGRAM_CAPTION_MAX_LENGTH, TELEGRAM_MEDIA_GROUP_MAX_ITEMS
 from wiki_philosopher_bot.death_report_rendering import validate_historical_death_report, png_dimensions
+from wiki_philosopher_bot.report_formatting import compact_percentage, mean_age, median_age
 from wiki_philosopher_bot.telegram_bot import (TELEGRAM_OUTCOME_CONFIRMED_SUCCESS,
     TELEGRAM_OUTCOME_DEFINITE_REJECTION, send_media_group_to_chat)
 
@@ -109,14 +110,19 @@ def validate_attempt(attempt):
         if not isinstance(item, dict) or item.get("position") != index or not _safe_filename(item.get("filename")) or not _is_sha(item.get("sha256")): raise ReportPostError("invalid ordered media entry")
         if item["filename"] in names: raise ReportPostError("duplicate media filename")
         names.add(item["filename"])
-    if media[0].get("kind") == "summary-completeness":
-        if len(media) < 4 or media[1].get("kind") != "deaths-by-year" or media[2].get("kind") != "median-age-by-year" or media[3].get("kind") != "age-at-death":
-            raise ReportPostError("renderer v2 media must begin with summary, year, median, and age charts")
-        tables = media[4:]
-    else:
-        if media[0].get("kind") != "deaths-by-year" or media[1].get("kind") != "age-at-death":
-            raise ReportPostError("media must begin with year and age charts")
-        tables = media[2:]
+    if media[0].get("kind") not in ("interval-summary", "summary-completeness"):
+        raise ReportPostError("media must begin with an interval summary")
+    table_start = next((index for index, item in enumerate(media) if item.get("kind") == "deaths-table"), None)
+    if table_start is None:
+        raise ReportPostError("media must end with death-table pages")
+    charts = media[1:table_start]
+    if len([item for item in charts if item.get("kind") in ("deaths-by-year", "deaths-by-month")]) != 1:
+        raise ReportPostError("media must contain exactly one death-frequency chart")
+    if len([item for item in charts if item.get("kind") in ("age-at-death", "individual-ages")]) != 1:
+        raise ReportPostError("media must contain exactly one age chart")
+    if len([item for item in charts if item.get("kind") == "median-age-by-year"]) > 1:
+        raise ReportPostError("media must contain at most one median-age chart")
+    tables = media[table_start:]
     if not tables or any(item.get("kind") != "deaths-table" for item in tables):
         raise ReportPostError("media must end with death-table pages")
     if [item.get("page") for item in tables] != list(range(1, len(tables) + 1)):
@@ -162,7 +168,7 @@ def _validate_manifest(report_path, manifest_path):
     if manifest.get("interval") != normalized["interval"] or manifest.get("exact_deaths") != len(normalized["rows"]) or manifest.get("exact_ages") != len(normalized["ages"]): raise ReportPostError("manifest summary does not match report")
     assets=manifest.get("assets")
     if not isinstance(assets, list): raise ReportPostError("manifest assets must be a list")
-    base=manifest_path.parent.resolve(); checked=[]; names=set(); charts={"deaths-by-year":0,"age-at-death":0,"summary-completeness":0,"median-age-by-year":0}; tables=[]
+    base=manifest_path.parent.resolve(); checked=[]; names=set(); charts={"deaths-by-year":0,"deaths-by-month":0,"age-at-death":0,"individual-ages":0,"interval-summary":0,"summary-completeness":0,"median-age-by-year":0}; tables=[]
     for asset in assets:
         if not isinstance(asset, dict) or not _safe_filename(asset.get("filename")) or not _is_sha(asset.get("sha256")): raise ReportPostError("malformed manifest asset")
         name=asset["filename"]
@@ -180,33 +186,15 @@ def _validate_manifest(report_path, manifest_path):
         elif kind == "deaths-table": tables.append(asset)
         else: raise ReportPostError("unsupported manifest asset kind")
         checked.append((asset,path,data))
-    if charts["deaths-by-year"] != 1 or charts["age-at-death"] != 1: raise ReportPostError("manifest must contain exactly one year and age chart")
-    if manifest.get("renderer_version") == 2 and (charts["summary-completeness"] != 1 or charts["median-age-by-year"] != 1): raise ReportPostError("renderer v2 manifest must contain summary and median-age charts")
+    if charts["interval-summary"] + charts["summary-completeness"] != 1: raise ReportPostError("manifest must contain exactly one interval summary")
+    if charts["deaths-by-year"] + charts["deaths-by-month"] != 1: raise ReportPostError("manifest must contain exactly one death-frequency chart")
+    if charts["age-at-death"] + charts["individual-ages"] != 1: raise ReportPostError("manifest must contain exactly one age chart")
     if not tables: raise ReportPostError("manifest must contain table pages")
     pages=sorted(asset.get("page") for asset in tables)
     if pages != list(range(1,len(tables)+1)) or any(asset.get("total_pages") != len(tables) for asset in tables): raise ReportPostError("table pages must be contiguous")
-    order={"summary-completeness":0,"deaths-by-year":1,"median-age-by-year":2,"age-at-death":3}
+    order={"interval-summary":0,"summary-completeness":0,"deaths-by-year":1,"deaths-by-month":1,"median-age-by-year":2,"age-at-death":3,"individual-ages":3}
     checked.sort(key=lambda row: (order.get(row[0]["kind"],4), row[0].get("page",0)))
     return report, normalized, manifest, report_bytes, manifest_bytes, checked
-
-def _format_compact_percentage(value):
-    if not isinstance(value, (int, float)) or isinstance(value, bool):
-        return "n/a"
-    rounded = round(float(value), 1)
-    return "{}%".format(int(rounded) if rounded.is_integer() else "{:.1f}".format(rounded))
-
-
-def _format_mean(value):
-    if not isinstance(value, (int, float)) or isinstance(value, bool):
-        return "n/a"
-    return "{:.1f}".format(float(value))
-
-
-def _format_median(value):
-    if not isinstance(value, (int, float)) or isinstance(value, bool):
-        return "n/a"
-    return "{:g}".format(value)
-
 
 def _extreme_caption_line(label, value):
     if not isinstance(value, dict):
@@ -215,7 +203,7 @@ def _extreme_caption_line(label, value):
     age = value.get("age")
     if not isinstance(name, str) or not name.strip() or not isinstance(age, (int, float)) or isinstance(age, bool):
         return "{}: n/a".format(label)
-    return "{}: {} — {}".format(label, html.escape(name, quote=True), _format_median(age))
+    return "{}: {} — {}".format(label, html.escape(name, quote=True), median_age(age))
 
 
 def _caption(normalized):
@@ -243,7 +231,7 @@ def _caption(normalized):
     if rich:
         exact_deaths = len(normalized["rows"])
         exact_ages = len(normalized["ages"])
-        age_coverage = _format_compact_percentage(
+        age_coverage = compact_percentage(
             completeness.get("exact_age_coverage_for_interval_pct")
         ) if exact_deaths else "n/a"
         lines = [
@@ -251,15 +239,11 @@ def _caption(normalized):
             "",
             "Confirmed exact deaths: {}".format(exact_deaths),
             "Exact ages available: {}/{} ({})".format(exact_ages, exact_deaths, age_coverage),
-            "Median age: {}".format(_format_median(stats.get("median"))),
-            "Mean age: {}".format(_format_mean(stats.get("mean"))),
+            "Median age: {}".format(median_age(stats.get("median"))),
+            "Mean age: {}".format(mean_age(stats.get("mean"))),
             "",
             _extreme_caption_line("Youngest", extremes.get("youngest")),
             _extreme_caption_line("Oldest", extremes.get("oldest")),
-            "",
-            "Exact death dates available for {} of the philosopher dataset.".format(
-                _format_compact_percentage(completeness.get("exact_death_date_coverage_pct"))
-            ),
         ]
     else:
         def legacy_number(value):

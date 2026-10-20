@@ -204,9 +204,16 @@ Inspect and reconcile the exact report-post attempt first. No schedule is
 configured for this workflow.
 
 The preview caption summarizes the interval, confirmed exact deaths, exact-age
-coverage, mean and median age, youngest/oldest exact-age records, and whole-
-dataset exact death-date coverage. Detailed rows and charts remain in the
-attached images. Public channel publication reuses this same frozen caption.
+coverage, mean and median age, and youngest/oldest exact-age records. Detailed
+rows and charts remain in the attached images. Public channel publication
+reuses this same frozen caption.
+
+Report visuals adapt to the interval: short reports use monthly death counts
+and an individual-age plot, while sufficiently populated multi-year reports
+use yearly counts, yearly median-age trends, and an age histogram. The routine
+summary and caption are interval-specific; whole-dataset completeness remains
+available in the JSON report rather than the normal Telegram presentation. The
+renderer still enforces the ten-media Telegram limit.
 
 ### Posting-attempt reconciliation
 

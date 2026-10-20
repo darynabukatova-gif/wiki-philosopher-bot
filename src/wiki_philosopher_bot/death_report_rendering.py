@@ -9,8 +9,11 @@ import tempfile
 import textwrap
 from collections import Counter
 from datetime import date
+import calendar
 from pathlib import Path
 from statistics import median
+from wiki_philosopher_bot.date_policy import completed_calendar_years
+from wiki_philosopher_bot.report_formatting import compact_percentage, mean_age, median_age
 
 RENDERER_VERSION = 2
 TELEGRAM_MEDIA_GROUP_MAX = 10
@@ -281,50 +284,101 @@ def _interval_text(inputs):
     return "{} through {} (inclusive)".format(interval["from"], interval["to"])
 
 
-def _format_number(value):
-    if value is None:
-        return "—"
-    if isinstance(value, float) and value.is_integer():
-        return str(int(value))
-    return "{:.2f}".format(value).rstrip("0").rstrip(".") if isinstance(value, float) else str(value)
-
-
-def _render_summary_completeness(pyplot, inputs, destination):
+def _render_interval_summary(pyplot, inputs, destination):
     figure = pyplot.figure(figsize=(10, 7.2))
     axes = figure.add_axes((0.07, 0.06, 0.86, 0.88))
     axes.axis("off")
-    completeness = inputs.get("data_completeness", {})
     statistics = inputs["age_statistics"]
-    exact = completeness.get("exact_deaths_in_interval", len(inputs["rows"]))
-    ages = completeness.get("exact_deaths_with_exact_age", len(inputs["ages"]))
-    total = completeness.get("semantic_philosophers_total")
+    exact = len(inputs["rows"])
+    ages = len(inputs["ages"])
     age_denominator = exact or 0
-    age_pct = completeness.get("exact_age_coverage_for_interval_pct")
+    age_pct = (ages * 100.0 / exact) if exact else None
     lines = [
         (0.98, "Philosopher deaths", 22, "#1f3b53", True),
         (0.925, _interval_text(inputs), 12, "#555555", False),
         (0.80, "EXACT DEATHS", 10, "#315b7d", True),
         (0.755, str(exact), 25, "#111111", True),
-        (0.67, "Exact ages available: {} / {} ({})".format(ages, age_denominator, _format_number(age_pct) + "%" if age_pct is not None else "—"), 12, "#222222", False),
-        (0.625, "Median age: {}    Mean age: {}".format(_format_number(statistics["median"]), _format_number(statistics["mean"])), 12, "#222222", False),
+        (0.67, "Exact ages available: {} / {} ({})".format(ages, age_denominator, compact_percentage(age_pct, missing="—")), 12, "#222222", False),
+        (0.625, "Median age: {}    Mean age: {}".format(median_age(statistics["median"], missing="—"), mean_age(statistics["mean"], missing="—")), 12, "#222222", False),
     ]
-    if total is not None:
-        lines.extend([
-            (0.51, "DATA COMPLETENESS", 10, "#315b7d", True),
-            (0.465, "Exact death dates: {} / {} ({})".format(completeness.get("exact_death_dates_total", "—"), total, _format_number(completeness.get("exact_death_date_coverage_pct")) + "%" if completeness.get("exact_death_date_coverage_pct") is not None else "—"), 11, "#222222", False),
-            (0.415, "Year-only: {}    Unknown: {}".format(completeness.get("year_only_death_dates_total", "—"), completeness.get("unknown_death_dates_total", "—")), 11, "#222222", False),
-            (0.365, "Exact birth dates: {} / {} ({})".format(completeness.get("exact_birth_dates_total", "—"), total, _format_number(completeness.get("exact_birth_date_coverage_pct")) + "%" if completeness.get("exact_birth_date_coverage_pct") is not None else "—"), 11, "#222222", False),
-        ])
     extremes = inputs.get("age_extremes", {})
     youngest, oldest = extremes.get("youngest"), extremes.get("oldest")
-    lines.append((0.25, "AGE EXTREMES", 10, "#315b7d", True))
-    lines.append((0.20, "Youngest: {} — {}".format(youngest.get("display_title", youngest.get("title")), youngest.get("age")) if youngest else "Youngest: unavailable", 11, "#222222", False))
-    lines.append((0.15, "Oldest: {} — {}".format(oldest.get("display_title", oldest.get("title")), oldest.get("age")) if oldest else "Oldest: unavailable", 11, "#222222", False))
+    def extreme_text(label, value):
+        if not isinstance(value, dict):
+            return "{}: unavailable".format(label)
+        name = value.get("display_title") or value.get("title")
+        age = value.get("age")
+        if not isinstance(name, str) or not name.strip() or not isinstance(age, (int, float)) or isinstance(age, bool):
+            return "{}: unavailable".format(label)
+        return "{}: {} — {}".format(label, name, median_age(age, missing="—"))
+    lines.append((0.43, "AGE EXTREMES", 10, "#315b7d", True))
+    lines.append((0.37, extreme_text("Youngest", youngest), 11, "#222222", False))
+    lines.append((0.30, extreme_text("Oldest", oldest), 11, "#222222", False))
     for y, text, size, color, bold in lines:
         axes.text(0.02, y, text, fontsize=size, color=color, fontweight="bold" if bold else "normal", va="top")
     try:
         figure.tight_layout()
-        return _atomic_figure_save(figure, destination), {"exact_deaths": exact, "exact_ages": ages, "age_coverage_pct": age_pct}
+        return _atomic_figure_save(figure, destination), {
+            "exact_deaths": exact,
+            "exact_ages": ages,
+            "age_coverage_pct": round(age_pct, 1) if age_pct is not None else None,
+            "median_age": statistics["median"],
+            "mean_age": statistics["mean"],
+            "youngest": youngest,
+            "oldest": oldest,
+        }
+    finally:
+        pyplot.close(figure)
+
+
+# Kept as a private compatibility alias for callers from the v2 renderer.
+_render_summary_completeness = _render_interval_summary
+
+
+def _month_starts(interval_from, interval_to):
+    current = date(interval_from.year, interval_from.month, 1)
+    end = date(interval_to.year, interval_to.month, 1)
+    months = []
+    while current <= end:
+        months.append(current)
+        if current.month == 12:
+            current = date(current.year + 1, 1, 1)
+        else:
+            current = date(current.year, current.month + 1, 1)
+    return months
+
+
+def _render_deaths_by_month(pyplot, inputs, destination):
+    interval_from = date.fromisoformat(inputs["interval"]["from"])
+    interval_to = date.fromisoformat(inputs["interval"]["to"])
+    months = _month_starts(interval_from, interval_to)
+    counts = {month: 0 for month in months}
+    for row in inputs["rows"]:
+        value = date.fromisoformat(row["death_date"])
+        month = date(value.year, value.month, 1)
+        if month in counts:
+            counts[month] += 1
+    labels = [month.strftime("%b %Y") for month in months]
+    values = [counts[month] for month in months]
+    figure, axes = pyplot.subplots(figsize=(max(10, len(months) * 0.65), 6.25))
+    try:
+        axes.set_title("Confirmed philosopher deaths by month\n{}".format(_interval_text(inputs)))
+        if months:
+            positions = list(range(len(months)))
+            axes.bar(positions, values, width=0.7, color="#315b7d")
+            axes.set_xticks(positions)
+            axes.set_xticklabels(labels, rotation=45, ha="right")
+            axes.set_xlabel("Month")
+            axes.set_ylabel("Confirmed exact deaths")
+            from matplotlib.ticker import MaxNLocator
+            axes.yaxis.set_major_locator(MaxNLocator(integer=True))
+            axes.set_ylim(bottom=0)
+            axes.grid(axis="y", alpha=0.2)
+        else:
+            axes.axis("off")
+            axes.text(0.5, 0.48, "No interval months available", ha="center", va="center", transform=axes.transAxes, fontsize=14)
+        figure.tight_layout()
+        return _atomic_figure_save(figure, destination), {"months": labels, "counts": values}
     finally:
         pyplot.close(figure)
 
@@ -435,6 +489,40 @@ def _render_age_at_death(pyplot, inputs, destination):
             "mean": statistics["mean"],
             "median": statistics["median"],
             "bin_edges": edges,
+            "zero_data_policy": "render-insufficient-data-placeholder",
+        }
+    finally:
+        pyplot.close(figure)
+
+
+def _render_individual_ages(pyplot, inputs, destination):
+    rows = [row for row in inputs["rows"] if row["age_at_death"] is not None]
+    ages = [row["age_at_death"] for row in rows]
+    labels = [row["display_title"] for row in rows]
+    figure_height = max(4.5, 1.2 + len(rows) * 0.48)
+    figure, axes = pyplot.subplots(figsize=(10, figure_height))
+    try:
+        axes.set_title("Individual exact ages at death\n{}".format(_interval_text(inputs)))
+        if ages:
+            positions = list(range(len(ages)))
+            axes.scatter(ages, positions, color="#6c4675", s=55, zorder=3)
+            axes.set_yticks(positions)
+            axes.set_yticklabels(labels)
+            axes.set_xlabel("Age at death (completed calendar years)")
+            axes.set_ylabel("Philosopher")
+            axes.grid(axis="x", alpha=0.2)
+            for position, age in zip(positions, ages):
+                axes.annotate(str(age), (age, position), xytext=(6, 0), textcoords="offset points", va="center", fontsize=9)
+        else:
+            axes.axis("off")
+            axes.text(0.5, 0.48, "Insufficient exact age data (n=0)", ha="center", va="center", transform=axes.transAxes, fontsize=14)
+        figure.tight_layout()
+        return _atomic_figure_save(figure, destination), {
+            "sample_size": len(ages),
+            "ages": ages,
+            "titles": labels,
+            "mean": inputs["age_statistics"]["mean"],
+            "median": inputs["age_statistics"]["median"],
             "zero_data_policy": "render-insufficient-data-placeholder",
         }
     finally:
@@ -574,37 +662,48 @@ def render_historical_death_report(
     pending = []
     assets = []
     try:
-        filename = "summary-completeness.png"
-        temporary, semantic = _render_summary_completeness(
+        filename = "interval-summary.png"
+        temporary, semantic = _render_interval_summary(
             pyplot, inputs, output_directory / filename,
         )
         pending.append((temporary, output_directory / filename))
-        assets.append(_asset_metadata("summary-completeness", filename, temporary, **semantic))
+        assets.append(_asset_metadata("interval-summary", filename, temporary, **semantic))
 
-        filename = "deaths-by-year.png"
-        temporary, semantic = _render_deaths_by_year(
-            pyplot, inputs, output_directory / filename,
-        )
+        interval_from = date.fromisoformat(inputs["interval"]["from"])
+        interval_to = date.fromisoformat(inputs["interval"]["to"])
+        short_interval = completed_calendar_years(interval_from, interval_to) < 2
+        if short_interval:
+            filename = "deaths-by-month.png"
+            render_frequency = _render_deaths_by_month
+            frequency_kind = "deaths-by-month"
+        else:
+            filename = "deaths-by-year.png"
+            render_frequency = _render_deaths_by_year
+            frequency_kind = "deaths-by-year"
+        temporary, semantic = render_frequency(pyplot, inputs, output_directory / filename)
         pending.append((temporary, output_directory / filename))
-        assets.append(_asset_metadata(
-            "deaths-by-year", filename, temporary, **semantic
-        ))
+        assets.append(_asset_metadata(frequency_kind, filename, temporary, **semantic))
 
-        filename = "median-age-by-year.png"
-        temporary, semantic = _render_median_age_by_year(
-            pyplot, inputs, output_directory / filename,
-        )
-        pending.append((temporary, output_directory / filename))
-        assets.append(_asset_metadata("median-age-by-year", filename, temporary, **semantic))
+        qualifying_medians = {
+            item["year"] for item in inputs.get("yearly_statistics", [])
+            if item.get("median_age") is not None
+        }
+        if len(qualifying_medians) >= 2:
+            filename = "median-age-by-year.png"
+            temporary, semantic = _render_median_age_by_year(pyplot, inputs, output_directory / filename)
+            pending.append((temporary, output_directory / filename))
+            assets.append(_asset_metadata("median-age-by-year", filename, temporary, **semantic))
 
-        filename = "age-at-death.png"
-        temporary, semantic = _render_age_at_death(
-            pyplot, inputs, output_directory / filename,
-        )
+        if len(inputs["ages"]) < 8:
+            filename = "individual-ages.png"
+            temporary, semantic = _render_individual_ages(pyplot, inputs, output_directory / filename)
+            age_kind = "individual-ages"
+        else:
+            filename = "age-at-death.png"
+            temporary, semantic = _render_age_at_death(pyplot, inputs, output_directory / filename)
+            age_kind = "age-at-death"
         pending.append((temporary, output_directory / filename))
-        assets.append(_asset_metadata(
-            "age-at-death", filename, temporary, **semantic
-        ))
+        assets.append(_asset_metadata(age_kind, filename, temporary, **semantic))
 
         rows = inputs["rows"]
         total_pages = max(1, int(math.ceil(len(rows) / float(rows_per_page))))
@@ -656,7 +755,7 @@ def render_historical_death_report(
             for path in output_directory.iterdir():
                 if path.is_file() and (
                     path.name.startswith("deaths-table-")
-                    or path.name in {"summary-completeness.png", "deaths-by-year.png", "median-age-by-year.png", "age-at-death.png"}
+                    or path.name in {"summary-completeness.png", "interval-summary.png", "deaths-by-month.png", "deaths-by-year.png", "median-age-by-year.png", "individual-ages.png", "age-at-death.png"}
                 ) and path.name not in expected_files:
                     path.unlink()
         return manifest, output_directory / "render-manifest.json"
