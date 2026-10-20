@@ -106,6 +106,11 @@ exceptional recovery, but a real local dispatch changes only the local
 database until an operator explicitly persists it to the private data
 repository.
 
+Historical death-report JSON includes additive `data_completeness`,
+`yearly_statistics`, and `age_extremes` sections. Exact-age statistics use only
+exact Gregorian birth and death dates; year-only potential matches are excluded
+from exact death and age statistics.
+
 To prepare a specific philosopher through Actions, first find the exact
 canonical title locally (this is read-only):
 

@@ -91,6 +91,48 @@ def _age_statistics(rows):
     }
 
 
+def _percentage(numerator, denominator):
+    """Return a stable two-decimal percentage, or null for no denominator."""
+    if denominator == 0:
+        return None
+    return round((numerator * 100.0) / denominator, 2)
+
+
+def _yearly_statistics(rows, interval_from, interval_to):
+    by_year = {}
+    for year in range(interval_from.year, interval_to.year + 1):
+        year_rows = [row for row in rows if int(row["death_date"][:4]) == year]
+        stats = _age_statistics(year_rows)
+        by_year[year] = {
+            "year": year,
+            "exact_deaths": len(year_rows),
+            "exact_ages_available": stats["exact_ages_available"],
+            "mean_age": stats["mean"],
+            "median_age": stats["median"],
+            "min_age": stats["minimum"],
+            "max_age": stats["maximum"],
+        }
+    return [by_year[year] for year in sorted(by_year)]
+
+
+def _age_extremes(rows):
+    exact = [row for row in rows if row["age_at_death"] is not None]
+    if not exact:
+        return {"youngest": None, "oldest": None}
+    youngest = min(exact, key=lambda row: (row["age_at_death"], row["death_date"], row["title"]))
+    oldest = min(exact, key=lambda row: (-row["age_at_death"], row["death_date"], row["title"]))
+
+    def compact(row):
+        return {
+            "title": row["title"],
+            "display_title": row.get("display_title") or row["title"],
+            "death_date": row["death_date"],
+            "age": row["age_at_death"],
+            "birth_date": row.get("birth_date"),
+        }
+    return {"youngest": compact(youngest), "oldest": compact(oldest)}
+
+
 def build_historical_death_report(
     database,
     interval_from,
@@ -198,6 +240,24 @@ def build_historical_death_report(
     if interval_source == "last-years":
         interval["last_years"] = last_years
 
+    exact_in_interval = len(exact_rows)
+    exact_with_age = sum(row["age_at_death"] is not None for row in exact_rows)
+    completeness = {
+        "semantic_philosophers_total": len(semantic_entries),
+        "exact_death_dates_total": exact_death_date_available,
+        "year_only_death_dates_total": death_year_only,
+        "unknown_death_dates_total": len(unknown_rows),
+        "invalid_death_date_records_total": len(invalid_rows),
+        "exact_birth_dates_total": exact_birth_date_available,
+        "exact_deaths_in_interval": exact_in_interval,
+        "exact_deaths_with_exact_age": exact_with_age,
+        "exact_deaths_without_exact_age": exact_in_interval - exact_with_age,
+        "percentage_rounding": "two-decimal; null when denominator is zero",
+        "exact_death_date_coverage_pct": _percentage(exact_death_date_available, len(semantic_entries)),
+        "exact_birth_date_coverage_pct": _percentage(exact_birth_date_available, len(semantic_entries)),
+        "exact_age_coverage_for_interval_pct": _percentage(exact_with_age, exact_in_interval),
+    }
+
     return {
         "operation": "historical-death-report",
         "mode": "read-only",
@@ -216,6 +276,7 @@ def build_historical_death_report(
             "unknown_death": len(unknown_rows),
             "exact_birth_date_available": exact_birth_date_available,
         },
+        "data_completeness": completeness,
         "interval_results": {
             "exact_deaths": len(exact_rows),
             "year_only_potential_matches": len(year_only_rows),
@@ -230,4 +291,6 @@ def build_historical_death_report(
             year: year_counts[year] for year in sorted(year_counts)
         },
         "age_statistics": _age_statistics(exact_rows),
+        "yearly_statistics": _yearly_statistics(exact_rows, interval_from, interval_to),
+        "age_extremes": _age_extremes(exact_rows),
     }

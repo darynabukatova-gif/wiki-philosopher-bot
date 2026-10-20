@@ -194,6 +194,71 @@ def test_age_is_calculated_only_when_both_exact_dates_exist():
     assert report["age_statistics"]["median"] == 74
 
 
+def test_completeness_yearly_statistics_and_extremes_are_consistent():
+    values = [
+        record("Young", birth_year=2000, birth_date="2000-06-01", death_year=2024, death_date="2024-05-31"),
+        record("Old", birth_year=1920, birth_date="1920-01-01", death_year=2024, death_date="2024-12-01"),
+        record("No birth", death_year=2025, death_date="2025-01-01"),
+        record("Year only", death_year=2025),
+        record("Unknown"),
+        record("Outside", death_year=2018, death_date="2018-01-01"),
+    ]
+    report = build({item["title"]: item for item in values})
+    completeness = report["data_completeness"]
+    assert completeness["semantic_philosophers_total"] == 6
+    assert completeness["exact_death_dates_total"] == 4
+    assert completeness["year_only_death_dates_total"] == 1
+    assert completeness["unknown_death_dates_total"] == 1
+    assert completeness["invalid_death_date_records_total"] == 0
+    assert completeness["exact_birth_dates_total"] == 2
+    assert completeness["exact_deaths_in_interval"] == 3
+    assert completeness["exact_deaths_with_exact_age"] == 2
+    assert completeness["exact_deaths_without_exact_age"] == 1
+    assert completeness["exact_death_date_coverage_pct"] == 66.67
+    assert completeness["exact_birth_date_coverage_pct"] == 33.33
+    assert completeness["exact_age_coverage_for_interval_pct"] == 66.67
+    yearly = report["yearly_statistics"]
+    assert [item["year"] for item in yearly] == list(range(2019, 2027))
+    assert next(item for item in yearly if item["year"] == 2024) == {
+        "year": 2024, "exact_deaths": 2, "exact_ages_available": 2,
+        "mean_age": 63.5, "median_age": 63.5, "min_age": 23, "max_age": 104,
+    }
+    assert report["age_extremes"]["youngest"]["title"] == "Young"
+    assert report["age_extremes"]["oldest"]["title"] == "Old"
+    assert sum(item["exact_deaths"] for item in yearly) == completeness["exact_deaths_in_interval"]
+    assert sum(item["exact_ages_available"] for item in yearly) == completeness["exact_deaths_with_exact_age"]
+
+
+def test_yearly_statistics_exclude_year_only_and_handle_zero_ages():
+    values = [record("Potential", death_year=2025), record("Exact", death_year=2025, death_date="2025-01-01")]
+    report = build({item["title"]: item for item in values})
+    year = next(item for item in report["yearly_statistics"] if item["year"] == 2025)
+    assert year["exact_deaths"] == 1
+    assert year["exact_ages_available"] == 0
+    assert year["mean_age"] is None
+    assert report["age_extremes"] == {"youngest": None, "oldest": None}
+
+
+def test_age_extreme_ties_use_death_date_then_title():
+    first = record("Zed", birth_year=2000, birth_date="2000-01-01", death_year=2024, death_date="2024-02-01")
+    second = record("Alpha", birth_year=2000, birth_date="2000-01-01", death_year=2024, death_date="2024-02-01")
+    report = build({"Zed": first, "Alpha": second})
+    assert report["age_extremes"]["youngest"]["title"] == "Alpha"
+    assert report["age_extremes"]["oldest"]["title"] == "Alpha"
+
+
+def test_completeness_percentages_are_null_for_zero_denominators_and_invalid_is_counted():
+    malformed = record("Malformed", death_year=2024, death_date="not-a-date")
+    unknown = record("Unknown")
+    report = build({"Malformed": malformed, "Unknown": unknown})
+    completeness = report["data_completeness"]
+    assert completeness["invalid_death_date_records_total"] == 1
+    assert completeness["unknown_death_dates_total"] == 1
+    assert completeness["exact_death_date_coverage_pct"] == 0.0
+    assert completeness["exact_age_coverage_for_interval_pct"] is None
+    assert completeness["exact_death_dates_total"] + completeness["year_only_death_dates_total"] + completeness["unknown_death_dates_total"] + completeness["invalid_death_date_records_total"] == completeness["semantic_philosophers_total"]
+
+
 def test_report_structure_is_stable_and_input_is_not_mutated():
     item = record("Ada", death_year=2025, death_date="2025-01-01")
     database = {"Ada": item}
@@ -201,8 +266,8 @@ def test_report_structure_is_stable_and_input_is_not_mutated():
     report = build(database)
     assert list(report) == [
         "operation", "mode", "generated_at", "database_sha256", "interval",
-        "population", "date_completeness", "interval_results",
-        "deaths_by_year", "age_statistics",
+        "population", "date_completeness", "data_completeness", "interval_results",
+        "deaths_by_year", "age_statistics", "yearly_statistics", "age_extremes",
     ]
     assert tuple(report["interval_results"]["rows"][0]) == EXACT_DEATH_ROW_FIELDS
     assert report["operation"] == "historical-death-report"
