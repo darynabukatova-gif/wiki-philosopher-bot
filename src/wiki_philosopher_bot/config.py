@@ -104,6 +104,7 @@ PURGE_REPORT_FOLDER = "reports/purge"
 RECENT_DEATH_REPORT_FOLDER = "reports/recent-deaths"
 DEATH_REPORT_FOLDER = "reports/deaths"
 REPORT_POST_STATE_ROOT = "data/report-posts"
+CHANNEL_PUBLICATION_STATE_ROOT = "data/channel-publications"
 EXTERNAL_LINK_REPORT_FOLDER = "reports/external-links"
 LOCAL_DATA_SYNC_REPORT_FOLDER = "reports/local-data-sync"
 
