@@ -57,6 +57,32 @@ def shift_month(year, month, offset):
     return value // 12, value % 12 + 1
 
 
+def completed_calendar_months(start, end):
+    """Count complete calendar months wholly contained in an inclusive interval.
+
+    This supports presentation decisions for arbitrary-date reports without
+    treating a partial first or final month as a complete observation period.
+    """
+    if not isinstance(start, date) or isinstance(start, datetime):
+        raise TypeError("start must be a date")
+    if not isinstance(end, date) or isinstance(end, datetime):
+        raise TypeError("end must be a date")
+    if start > end:
+        raise ValueError("start must not be after end")
+
+    first_year, first_month = start.year, start.month
+    if start.day != 1:
+        first_year, first_month = shift_month(first_year, first_month, 1)
+
+    last_year, last_month = end.year, end.month
+    if end.day != month_end(last_year, last_month).day:
+        last_year, last_month = shift_month(last_year, last_month, -1)
+
+    if (first_year, first_month) > (last_year, last_month):
+        return 0
+    return (last_year - first_year) * 12 + last_month - first_month + 1
+
+
 def _completed_month(year, month, current):
     return (year, month) < (current.year, current.month)
 

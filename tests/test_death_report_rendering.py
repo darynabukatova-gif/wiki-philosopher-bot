@@ -358,6 +358,69 @@ def test_short_interval_uses_months_and_individual_ages(tmp_path):
     assert ages["titles"] == ["B", "C", "D", "E"]
 
 
+@pytest.mark.parametrize(
+    ("start", "end", "include_median"),
+    [
+        ("2024-10-01", "2025-09-30", False),
+        ("2024-01-01", "2025-11-30", False),
+        ("2024-01-01", "2025-12-31", True),
+    ],
+)
+def test_median_age_chart_requires_at_least_24_complete_months(tmp_path, start, end, include_median):
+    source = tmp_path / "median-window.json"
+    write_interval_report(source, [
+        row("Earlier", "2024-10-02", 80),
+        row("Later", "2025-02-02", 81),
+    ], start, end)
+    manifest, _ = render_historical_death_report(
+        source, output_directory=tmp_path / "assets",
+    )
+    kinds = [asset["kind"] for asset in manifest["assets"]]
+    assert ("median-age-by-year" in kinds) is include_median
+    if include_median:
+        assert kinds == [
+            "interval-summary", "deaths-by-month", "median-age-by-year",
+            "individual-ages", "deaths-table",
+        ]
+    else:
+        assert "individual-ages" in kinds
+        assert kinds.index("individual-ages") == 2
+
+
+def test_median_age_chart_requires_two_non_null_yearly_medians(tmp_path):
+    source = tmp_path / "one-median.json"
+    write_interval_report(source, [
+        row("Aged", "2024-10-02", 80),
+        row("Unknown age", "2025-02-02", None),
+    ], "2024-01-01", "2026-02-28")
+    manifest, _ = render_historical_death_report(
+        source, output_directory=tmp_path / "assets",
+    )
+    kinds = [asset["kind"] for asset in manifest["assets"]]
+    assert "median-age-by-year" not in kinds
+    assert kinds == [
+        "interval-summary", "deaths-by-year", "individual-ages",
+        "deaths-table",
+    ]
+
+
+def test_seven_year_interval_keeps_median_age_chart(tmp_path):
+    source = tmp_path / "seven-years.json"
+    write_interval_report(source, [
+        row("A", "2019-10-02", 70), row("B", "2020-02-02", 71),
+        row("C", "2021-03-02", 72), row("D", "2022-04-02", 73),
+        row("E", "2023-05-02", 74), row("F", "2024-06-02", 75),
+        row("G", "2025-07-02", 76), row("H", "2026-08-02", 77),
+    ], "2019-10-01", "2026-09-30")
+    manifest, _ = render_historical_death_report(
+        source, output_directory=tmp_path / "assets",
+    )
+    assert [asset["kind"] for asset in manifest["assets"]] == [
+        "interval-summary", "deaths-by-year", "median-age-by-year",
+        "age-at-death", "deaths-table",
+    ]
+
+
 def test_individual_age_metadata_is_sorted_by_age_then_title(tmp_path):
     source = tmp_path / "age-order.json"
     rows = [

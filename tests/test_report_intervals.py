@@ -2,7 +2,10 @@ from datetime import date
 
 import pytest
 
-from wiki_philosopher_bot.report_intervals import resolve_month_interval
+from wiki_philosopher_bot.report_intervals import (
+    completed_calendar_months,
+    resolve_month_interval,
+)
 
 
 RUN_DATE = date(2026, 10, 20)
@@ -81,3 +84,16 @@ def test_arbitrary_date_engine_remains_separate():
     # death-report CLI's existing exact-date interval support.
     result = resolve_month_interval(mode="custom", from_month="2024-03", to_month="2025-08", now=RUN_DATE)
     assert result["from"] == "2024-03-01"
+
+
+@pytest.mark.parametrize(
+    ("start", "end", "expected"),
+    [
+        (date(2024, 10, 1), date(2025, 9, 30), 12),
+        (date(2024, 1, 1), date(2025, 12, 31), 24),
+        (date(2023, 10, 1), date(2025, 9, 30), 24),
+        (date(2024, 10, 19), date(2026, 10, 19), 23),
+    ],
+)
+def test_completed_calendar_months_counts_only_whole_months(start, end, expected):
+    assert completed_calendar_months(start, end) == expected

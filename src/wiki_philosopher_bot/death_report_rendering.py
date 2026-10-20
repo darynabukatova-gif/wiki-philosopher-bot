@@ -13,6 +13,7 @@ import calendar
 from pathlib import Path
 from statistics import median
 from wiki_philosopher_bot.date_policy import completed_calendar_years
+from wiki_philosopher_bot.report_intervals import completed_calendar_months
 from wiki_philosopher_bot.report_formatting import (
     compact_percentage, format_report_interval_compact,
     format_report_interval_long, mean_age, median_age,
@@ -451,6 +452,18 @@ def _render_median_age_by_year(pyplot, inputs, destination):
         pyplot.close(figure)
 
 
+def _should_render_median_age_by_year(inputs, interval_from, interval_to):
+    """Whether a yearly median chart has a meaningful observation window."""
+    qualifying_medians = {
+        item["year"] for item in inputs.get("yearly_statistics", [])
+        if item.get("median_age") is not None
+    }
+    return (
+        completed_calendar_months(interval_from, interval_to) >= 24
+        and len(qualifying_medians) >= 2
+    )
+
+
 def _render_deaths_by_year(pyplot, inputs, destination):
     years = list(inputs["deaths_by_year"])
     counts = [inputs["deaths_by_year"][year] for year in years]
@@ -732,11 +745,7 @@ def render_historical_death_report(
         pending.append((temporary, output_directory / filename))
         assets.append(_asset_metadata(frequency_kind, filename, temporary, **semantic))
 
-        qualifying_medians = {
-            item["year"] for item in inputs.get("yearly_statistics", [])
-            if item.get("median_age") is not None
-        }
-        if len(qualifying_medians) >= 2:
+        if _should_render_median_age_by_year(inputs, interval_from, interval_to):
             filename = "median-age-by-year.png"
             temporary, semantic = _render_median_age_by_year(pyplot, inputs, output_directory / filename)
             pending.append((temporary, output_directory / filename))
