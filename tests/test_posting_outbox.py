@@ -103,7 +103,7 @@ def test_prepare_persists_one_exact_pending_attempt_without_telegram(tmp_path, m
 
 
 @pytest.mark.parametrize("state", ("pending", "unknown", "failed"))
-def test_prepare_globally_blocks_new_attempt_for_unresolved_latest_state(tmp_path, state):
+def test_prepare_quarantines_only_unresolved_title(tmp_path, state, monkeypatch):
     first = postable_entry("Ada Lovelace")
     second = postable_entry("Zeno")
     database = {first["title"]: first, second["title"]: second}
@@ -116,12 +116,21 @@ def test_prepare_globally_blocks_new_attempt_for_unresolved_latest_state(tmp_pat
             error_summary="Prior outcome.",
         )
 
+    monkeypatch.setattr(
+        outbox,
+        "prepare_philosopher_message",
+        lambda philosopher, selected_quote: type(
+            "Prepared", (), {"selected_quote": selected_quote, "message_text": "Zeno payload"}
+        )(),
+    )
     result = prepare(database, tmp_path, attempt_id="attempt-2")
 
-    assert result.ok is False
-    assert result.error_kind == "unresolved_attempt"
-    assert result.manual_reconciliation_required is True
-    assert len(database["Zeno"]["posting"]["attempts"]) == 0
+    assert result.ok is True
+    assert result.title == "Zeno"
+    assert result.unresolved_attempt_count == 1
+    assert result.quarantined_titles == ("Ada Lovelace",)
+    assert result.unresolved_attempts[0]["state"] == state
+    assert len(database["Zeno"]["posting"]["attempts"]) == 1
 
 
 def test_prepare_is_idempotently_blocked_after_pending_persistence(tmp_path, monkeypatch):
@@ -140,7 +149,8 @@ def test_prepare_is_idempotently_blocked_after_pending_persistence(tmp_path, mon
 
     assert first.ok is True
     assert second.ok is False
-    assert second.error_kind == "unresolved_attempt"
+    assert second.error_kind == "no_available_candidate"
+    assert second.unresolved_attempt_count == 1
     assert len(database["Ada Lovelace"]["posting"]["attempts"]) == 1
 
 
@@ -313,11 +323,54 @@ def test_unresolved_attempt_blocks_manual_title_before_selection(tmp_path, monke
     append_pending(database, tmp_path, title="Ada Lovelace")
     monkeypatch.setattr(outbox, "select_quote_for_post", lambda *args, **kwargs: pytest.fail("blocked before quote selection"))
 
-    result = prepare(database, tmp_path, title="René Descartes", attempt_id="manual-attempt")
+    result = prepare(database, tmp_path, title="Ada Lovelace", attempt_id="manual-attempt")
 
     assert result.ok is False
-    assert result.error_kind == "unresolved_attempt"
+    assert result.error_kind == "unresolved_attempt_for_title"
+    assert result.attempt_id == "attempt-1"
+    assert result.title == "Ada Lovelace"
+    assert result.manual_reconciliation_required is True
     assert requested["posting"]["attempts"] == []
+
+
+def test_all_candidates_quarantined_returns_no_available_candidate(tmp_path):
+    first = postable_entry("Ada Lovelace")
+    second = postable_entry("Zeno")
+    database = {first["title"]: first, second["title"]: second}
+    write_database(tmp_path, database)
+    append_pending(database, tmp_path, title="Ada Lovelace", attempt_id="a1")
+    append_pending(database, tmp_path, title="Zeno", attempt_id="a2")
+
+    result = prepare(database, tmp_path, attempt_id="attempt-3")
+
+    assert result.ok is False
+    assert result.error_kind == "no_available_candidate"
+    assert "non-quarantined" in result.error_summary
+    assert result.unresolved_attempt_count == 2
+    assert set(result.quarantined_titles) == {"Ada Lovelace", "Zeno"}
+
+
+def test_multiple_quarantined_titles_leave_unrelated_candidate_available(tmp_path, monkeypatch):
+    first = postable_entry("Ada Lovelace")
+    second = postable_entry("Zeno")
+    third = postable_entry("Catherine Descartes")
+    database = {entry["title"]: entry for entry in (first, second, third)}
+    write_database(tmp_path, database)
+    append_pending(database, tmp_path, title="Ada Lovelace", attempt_id="a1")
+    append_pending(database, tmp_path, title="Zeno", attempt_id="a2")
+    monkeypatch.setattr(
+        outbox,
+        "prepare_philosopher_message",
+        lambda philosopher, selected_quote: type(
+            "Prepared", (), {"selected_quote": selected_quote, "message_text": "Catherine payload"}
+        )(),
+    )
+
+    result = prepare(database, tmp_path, attempt_id="a3")
+
+    assert result.ok is True
+    assert result.title == "Catherine Descartes"
+    assert set(result.quarantined_titles) == {"Ada Lovelace", "Zeno"}
 
 
 def test_manual_title_preparation_uses_normal_external_link_message_and_fingerprint(tmp_path, monkeypatch):

@@ -256,11 +256,14 @@ def is_posting_candidate(entry):
 def get_random_philosopher(
     database,
     chooser=random.choices,
+    excluded_titles=None,
 ):
+    excluded_titles = set(excluded_titles or ())
     philosophers = [
         entry
         for entry in database.values()
         if is_posting_candidate(entry)
+        and entry.get("title") not in excluded_titles
     ]
 
     if not philosophers:

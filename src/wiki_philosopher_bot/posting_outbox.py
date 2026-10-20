@@ -53,6 +53,9 @@ class PostingOperationResult:
     persistence_succeeded: bool = False
     manual_reconciliation_required: bool = False
     resolution_note: str = None
+    unresolved_attempt_count: int = 0
+    quarantined_titles: tuple = ()
+    unresolved_attempts: tuple = ()
 
     def as_report(self):
         return asdict(self)
@@ -76,6 +79,11 @@ def unresolved_posting_attempts(database):
     return unresolved
 
 
+def quarantined_posting_titles(database):
+    """Return unresolved newest attempts as safe, concise diagnostics."""
+    return unresolved_posting_attempts(database)
+
+
 def prepare_posting_attempt(
     database,
     stats,
@@ -92,20 +100,21 @@ def prepare_posting_attempt(
     now=None,
 ):
     """Select and durably persist one pending attempt without calling Telegram."""
-    unresolved = unresolved_posting_attempts(database)
-    if unresolved:
-        title, attempt = unresolved[0]
-        return PostingOperationResult(
-            phase="prepare",
-            ok=False,
-            attempt_id=attempt.get("attempt_id"),
-            title=title,
-            starting_state=attempt.get("state"),
-            ending_state=attempt.get("state"),
-            error_kind="unresolved_attempt",
-            error_summary="An unresolved posting attempt requires manual reconciliation.",
-            manual_reconciliation_required=True,
-        )
+    unresolved = quarantined_posting_titles(database)
+    unresolved_titles = {title for title, _attempt in unresolved}
+    unresolved_diagnostics = tuple(
+        {
+            "attempt_id": attempt.get("attempt_id"),
+            "title": title,
+            "state": attempt.get("state"),
+        }
+        for title, attempt in unresolved
+    )
+    diagnostic_kwargs = {
+        "unresolved_attempt_count": len(unresolved),
+        "quarantined_titles": tuple(sorted(unresolved_titles)),
+        "unresolved_attempts": unresolved_diagnostics,
+    }
 
     if title is not None:
         # Exact canonical-key lookup only: no normalization, aliasing, or
@@ -125,6 +134,21 @@ def prepare_posting_attempt(
                 title=title,
                 error_kind="title_not_found",
                 error_summary="The requested canonical title does not exist.",
+                **diagnostic_kwargs,
+            )
+        if title in unresolved_titles:
+            attempt = next(item for item_title, item in unresolved if item_title == title)
+            return PostingOperationResult(
+                phase="prepare",
+                ok=False,
+                title=title,
+                attempt_id=attempt.get("attempt_id"),
+                starting_state=attempt.get("state"),
+                ending_state=attempt.get("state"),
+                error_kind="unresolved_attempt_for_title",
+                error_summary="This philosopher is quarantined by an unresolved posting attempt; manual reconciliation is required.",
+                manual_reconciliation_required=True,
+                **diagnostic_kwargs,
             )
         if not is_posting_candidate(philosopher):
             if not is_semantically_postable_philosopher(philosopher):
@@ -148,18 +172,25 @@ def prepare_posting_attempt(
                 title=title,
                 error_kind=error_kind,
                 error_summary=error_summary,
+                **diagnostic_kwargs,
             )
     else:
         candidate_kwargs = {}
         if candidate_chooser is not None:
             candidate_kwargs["chooser"] = candidate_chooser
+        candidate_kwargs["excluded_titles"] = unresolved_titles
         philosopher = get_random_philosopher(database, **candidate_kwargs)
         if philosopher is None:
             return PostingOperationResult(
                 phase="prepare",
                 ok=False,
-                error_kind="no_candidate",
-                error_summary="No eligible philosopher is available for posting.",
+                error_kind=("no_available_candidate" if unresolved_titles else "no_candidate"),
+                error_summary=(
+                    "No eligible non-quarantined philosopher is available for posting."
+                    if unresolved_titles
+                    else "No eligible philosopher is available for posting."
+                ),
+                **diagnostic_kwargs,
             )
 
     title = philosopher["title"]
@@ -183,6 +214,7 @@ def prepare_posting_attempt(
             title=title,
             error_kind="message_too_long",
             error_summary="The required summary-first message could not fit Telegram's text limit.",
+            **diagnostic_kwargs,
         )
     attempt = make_pending_posting_attempt(
         title,
@@ -210,6 +242,7 @@ def prepare_posting_attempt(
             ending_state=None,
             error_kind="persistence_error",
             error_summary="The pending posting attempt could not be persisted.",
+            **diagnostic_kwargs,
         )
 
     return PostingOperationResult(
@@ -220,6 +253,7 @@ def prepare_posting_attempt(
         starting_state=None,
         ending_state="pending",
         persistence_succeeded=True,
+        **diagnostic_kwargs,
     )
 
 
