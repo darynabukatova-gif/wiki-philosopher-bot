@@ -100,6 +100,25 @@ def test_apply_proposals_remains_schema_valid():
     }
     assert validate_database_entry(value) == []
 
+def test_report_retains_side_statuses_and_accounting(monkeypatch):
+    a = entry("Both", "Q10")
+    b = entry("Some", "Q11"); c = entry("None", "Q12")
+    some = {"claims": {"P569": [claim("+1950-00-00T00:00:00Z", 9)], "P570": [{"rank":"normal", "mainsnak":{"snaktype":"somevalue"}}]}}
+    none = {"claims": {}}
+    both = vats_entity()
+    def fake(qids, limiter=None):
+        return wikipedia_api.BatchLookupResult({"Q10": both, "Q11": some, "Q12": none}, None)
+    monkeypatch.setattr(refresh, "get_wikidata_entities_batch", fake)
+    proposals, results = refresh.collect_proposals({x["title"]: x for x in (a,b,c)}, ["Both","Some","None"])
+    entries = {x["title"]: x for x in results["record_entries"]}
+    assert entries["Some"]["death"]["status"] == "no_usable_claim"
+    assert entries["Some"]["death"]["reason"] == "snaktype=somevalue"
+    assert entries["Some"]["birth"]["status"] == "proposed"
+    assert entries["None"]["birth"]["status"] == "property_absent"
+    assert results["records_with_any_proposal"] == 2
+    assert results["records_with_any_proposal"] + results["unchanged"] == 3
+    assert results["birth_time_proposals"] + results["death_time_proposals"] - results["both_proposed"] == 2
+
 
 def test_run_refresh_dry_run_does_not_write_or_backup(tmp_path, monkeypatch):
     value = entry()
@@ -129,3 +148,13 @@ def test_run_refresh_apply_uses_one_backup_and_only_adds_evidence(tmp_path, monk
     assert updated["wikidata"]["birth_year"] == 500
     assert updated["wikidata"]["birth_time"]["precision"] == 6
     assert updated["evaluation"]["status"] == "accepted"
+
+def test_apply_refuses_operational_failure_before_backup(tmp_path, monkeypatch):
+    value = entry()
+    raw = serialize_database_entries([value]); (tmp_path / "database.jsonl").write_bytes(raw)
+    monkeypatch.setattr(refresh, "DATABASE_BACKUP_FOLDER", str(tmp_path / "backups"))
+    results = refresh._new_results(); results["operational_failures"] = 1
+    monkeypatch.setattr(refresh, "collect_proposals", lambda database, titles: ({"Vātsyāyana": {"birth_time": {"status": "available"}}}, results))
+    report, _ = refresh.run_refresh({value["title"]: value}, str(tmp_path), str(tmp_path / "reports"), apply=True)
+    assert report["backup"]["created"] is False
+    assert (tmp_path / "database.jsonl").read_bytes() == raw
