@@ -261,6 +261,18 @@ and review; absent evidence is `null`, while malformed current-rank source
 claims are marked separately. It does not yet change Telegram life-date
 presentation or backfill existing records.
 
+Structured evidence can be reviewed before a narrow canonical backfill:
+
+```bash
+wiki-philosopher-refresh-wikidata-life-evidence \
+  --missing-structured-evidence --dry-run
+wiki-philosopher-refresh-wikidata-life-evidence \
+  --missing-structured-evidence --apply
+```
+
+Apply mode changes only `wikidata.birth_time` and `wikidata.death_time`, after
+one verified backup. Legacy year/date fields and presentation remain unchanged.
+
 The installed console commands are:
 
 - `wiki-philosopher-backup`
