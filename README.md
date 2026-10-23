@@ -250,6 +250,17 @@ received the original message. These commands do not send Telegram messages.
 
 ## Maintenance commands
 
+### Wikidata life-date provenance
+
+Canonical `wikidata.birth_year` / `death_year` remain legacy-compatible integer
+fields. Newly fetched records may additionally retain `birth_time` / `death_time`
+evidence: selected raw Wikidata time, precision category, calendar model, rank,
+signed year, and relevant earliest/latest/circa qualifiers. Exact ISO dates remain a
+strict Gregorian day-precision field. The evidence is for safe future display
+and review; absent evidence is `null`, while malformed current-rank source
+claims are marked separately. It does not yet change Telegram life-date
+presentation or backfill existing records.
+
 The installed console commands are:
 
 - `wiki-philosopher-backup`

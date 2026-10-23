@@ -88,8 +88,10 @@ def test_runtime_empty_entry_matches_canonical_schema():
             "occupations": [],
             "birth_year": None,
             "birth_date": None,
+            "birth_time": None,
             "death_year": None,
             "death_date": None,
+            "death_time": None,
             "is_human": None,
             "is_philosopher": None,
             "fetched_at": None,
@@ -123,6 +125,33 @@ def test_runtime_empty_entry_matches_canonical_schema():
         },
     }
     assert database_schema.validate_database_entry(entry) == []
+
+
+def test_life_time_evidence_is_optional_but_validated_when_present():
+    entry = database_schema.make_empty_database_entry("Ancient philosopher")
+    entry["wikidata"].update({
+        "status": "available", "qid": "Q1", "instances": ["Q5"],
+        "occupations": ["Q4964182"], "birth_year": 500,
+        "birth_time": {
+            "status": "available", "property": "P569", "raw_time": "+0500-00-00T00:00:00Z",
+            "precision": 6, "precision_kind": "millennium",
+            "calendar_model": "http://www.wikidata.org/entity/Q1985786",
+            "rank": "preferred", "year": 500,
+            "qualifiers": {
+                "P1319": {
+                    "raw_time": "+0350-00-00T00:00:00Z", "precision": 7,
+                    "precision_kind": "century",
+                    "calendar_model": "http://www.wikidata.org/entity/Q1985786",
+                    "year": 350,
+                },
+            },
+        },
+    })
+    assert database_schema.validate_database_entry(entry) == []
+    entry["wikidata"]["birth_time"]["precision_kind"] = "year"
+    assert "wikidata.birth_time.precision_kind is inconsistent" in (
+        database_schema.validate_database_entry(entry)
+    )
     assert "legacy_records" not in entry
     assert database_schema.make_empty_database_entry is make_empty_database_entry
 

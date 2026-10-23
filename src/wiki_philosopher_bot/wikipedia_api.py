@@ -199,6 +199,28 @@ _WIKIDATA_EXACT_DATE_RE = re.compile(
     r"^\+(?P<year>\d{4})-(?P<month>\d{2})-(?P<day>\d{2})T"
 )
 _WIKIDATA_GREGORIAN_CALENDAR = "http://www.wikidata.org/entity/Q1985727"
+_WIKIDATA_TIME_QUALIFIER_PROPERTIES = ("P1319", "P1326")
+_WIKIDATA_APPROXIMATE_QUALIFIER = "P1480"
+_WIKIDATA_CIRCA_VALUE = "Q5727902"
+
+
+def wikidata_time_precision_kind(precision):
+    """Return a stable semantic category for a Wikidata time precision.
+
+    Wikidata uses 11 for day, 10 for month, 9 for year, 8 for decade,
+    7 for century, and 6 for millennium.  Lower precision values are kept as
+    source evidence but deliberately do not pretend to be a millennium.
+    """
+    if not isinstance(precision, int) or isinstance(precision, bool):
+        return "unsupported"
+    return {
+        11: "day",
+        10: "month",
+        9: "year",
+        8: "decade",
+        7: "century",
+        6: "millennium",
+    }.get(precision, "broader_than_millennium" if precision < 6 else "unsupported")
 
 thread_local = threading.local()
 
@@ -1915,6 +1937,152 @@ def parse_wikidata_time_claim_exact_date(claim):
         ).isoformat()
     except ValueError:
         return None
+
+
+def _wikidata_time_value_evidence(value):
+    """Normalize one Wikidata time datavalue without converting calendars."""
+    if not isinstance(value, dict):
+        return None
+    raw_time = value.get("time")
+    precision = value.get("precision")
+    calendar_model = value.get("calendarmodel")
+    year = parse_wikidata_time_year(raw_time)
+    if (
+        not isinstance(raw_time, str)
+        or not isinstance(precision, int)
+        or isinstance(precision, bool)
+        or not isinstance(calendar_model, str)
+        or not calendar_model
+        or year is None
+    ):
+        return None
+    return {
+        "raw_time": raw_time,
+        "precision": precision,
+        "precision_kind": wikidata_time_precision_kind(precision),
+        "calendar_model": calendar_model,
+        "year": year,
+    }
+
+
+def wikidata_time_claim_evidence(property_id, claim):
+    """Return compact provenance for one selected P569/P570 statement.
+
+    This retains only the time value and temporal range qualifiers needed for
+    future display decisions; it intentionally does not store an entire claim.
+    """
+    if property_id not in {"P569", "P570"} or not isinstance(claim, dict):
+        return None
+    mainsnak = claim.get("mainsnak")
+    datavalue = mainsnak.get("datavalue") if isinstance(mainsnak, dict) else None
+    value = datavalue.get("value") if isinstance(datavalue, dict) else None
+    evidence = _wikidata_time_value_evidence(value)
+    if evidence is None:
+        return None
+    rank = claim.get("rank", "normal")
+    if rank not in {"preferred", "normal", "deprecated"}:
+        return None
+    evidence.update({"status": "available", "property": property_id, "rank": rank})
+    qualifiers = claim.get("qualifiers")
+    if isinstance(qualifiers, dict):
+        normalized = {}
+        for qualifier_property in _WIKIDATA_TIME_QUALIFIER_PROPERTIES:
+            qualifier_snaks = qualifiers.get(qualifier_property)
+            if not isinstance(qualifier_snaks, list):
+                continue
+            for qualifier_snak in qualifier_snaks:
+                datavalue = (
+                    qualifier_snak.get("datavalue")
+                    if isinstance(qualifier_snak, dict) else None
+                )
+                qualifier = _wikidata_time_value_evidence(
+                    datavalue.get("value") if isinstance(datavalue, dict) else None
+                )
+                if qualifier is not None:
+                    normalized[qualifier_property] = qualifier
+                    break
+        if normalized:
+            evidence["qualifiers"] = normalized
+        approximate_snaks = qualifiers.get(_WIKIDATA_APPROXIMATE_QUALIFIER)
+        if isinstance(approximate_snaks, list):
+            for snak in approximate_snaks:
+                value = (
+                    snak.get("datavalue", {}).get("value")
+                    if isinstance(snak, dict) and isinstance(snak.get("datavalue"), dict)
+                    else None
+                )
+                entity_id = value.get("id") if isinstance(value, dict) else None
+                if isinstance(entity_id, str) and entity_id:
+                    evidence.setdefault("qualifier_entity_ids", {})[
+                        _WIKIDATA_APPROXIMATE_QUALIFIER
+                    ] = entity_id
+                    break
+    return evidence
+
+
+def classify_wikidata_life_date(evidence):
+    """Classify preserved life-date evidence without choosing display text."""
+    if evidence is None:
+        return "unknown"
+    if not isinstance(evidence, dict):
+        return "unknown"
+    if evidence.get("status") != "available":
+        return "unknown"
+    qualifiers = evidence.get("qualifiers")
+    if isinstance(qualifiers, dict) and (
+        "P1319" in qualifiers or "P1326" in qualifiers
+    ):
+        return "bounded_range"
+    kind = evidence.get("precision_kind")
+    qualifier_entity_ids = evidence.get("qualifier_entity_ids")
+    if (
+        kind == "year"
+        and isinstance(qualifier_entity_ids, dict)
+        and qualifier_entity_ids.get(_WIKIDATA_APPROXIMATE_QUALIFIER)
+        == _WIKIDATA_CIRCA_VALUE
+    ):
+        return "approximate_year"
+    return kind if kind in {
+        "day", "month", "year", "decade", "century", "millennium",
+        "broader_than_millennium",
+    } else "unknown"
+
+
+def get_life_date_evidence_from_wikidata(entity):
+    """Return legacy values plus selected P569/P570 provenance.
+
+    `birth_time`/`death_time` are null for absent or malformed unsupported
+    claims.  The legacy values intentionally preserve existing extraction
+    behaviour for callers that still rely on the lossy integer fields.
+    """
+    birth, birth_date, death, death_date = get_life_dates_from_wikidata(entity)
+    claims = entity.get("claims") if isinstance(entity, dict) else None
+    def selected_evidence(property_id):
+        property_claims = claims.get(property_id) if isinstance(claims, dict) else None
+        if property_claims is None or property_claims == []:
+            return None
+        claim = select_wikidata_time_claim(property_claims)
+        if claim is not None:
+            return wikidata_time_claim_evidence(property_id, claim)
+        # Keep malformed current-rank source evidence distinct from no claim;
+        # all-deprecated claims intentionally remain unavailable evidence.
+        if isinstance(property_claims, list) and any(
+            not isinstance(item, dict) or item.get("rank", "normal") != "deprecated"
+            for item in property_claims
+        ):
+            return {"status": "malformed", "property": property_id}
+        return None
+
+    birth_time = selected_evidence("P569")
+    death_time = selected_evidence("P570")
+    return {
+        "birth_year": birth,
+        "birth_date": birth_date,
+        "birth_time": birth_time,
+        "death_year": death,
+        "death_date": death_date,
+        "death_time": death_time,
+    }
 
 
 def get_years_from_wikidata(entity):

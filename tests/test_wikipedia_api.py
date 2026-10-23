@@ -1123,6 +1123,119 @@ def test_get_life_dates_never_invents_exact_birth_date(
         "claims": {"P569": [claim]},
     }) == (1815, None, None, None)
 
+
+@pytest.mark.parametrize(
+    ("precision", "expected"),
+    [
+        (11, "day"), (10, "month"), (9, "year"), (8, "decade"),
+        (7, "century"), (6, "millennium"), (5, "broader_than_millennium"),
+        (15, "unsupported"),
+    ],
+)
+def test_wikidata_time_precision_kind_preserves_semantic_categories(precision, expected):
+    assert wikipedia_api.wikidata_time_precision_kind(precision) == expected
+
+
+def test_life_date_evidence_preserves_vatsyayana_style_precision_calendar_rank_and_range():
+    claim = wikidata_time_claim("+0500-00-00T00:00:00Z", "preferred")
+    claim["mainsnak"]["datavalue"]["value"].update({
+        "precision": 6,
+        "calendarmodel": "http://www.wikidata.org/entity/Q1985786",
+    })
+    claim["qualifiers"] = {
+        "P1319": [{"datavalue": {"value": {
+            "time": "+0350-00-00T00:00:00Z", "precision": 7,
+            "calendarmodel": "http://www.wikidata.org/entity/Q1985786",
+        }}}],
+        "P1326": [{"datavalue": {"value": {
+            "time": "+0550-00-00T00:00:00Z", "precision": 7,
+            "calendarmodel": "http://www.wikidata.org/entity/Q1985786",
+        }}}],
+    }
+    evidence = wikipedia_api.get_life_date_evidence_from_wikidata({
+        "claims": {"P569": [claim], "P570": [claim]},
+    })
+    birth = evidence["birth_time"]
+    assert evidence["birth_year"] == 500
+    assert evidence["birth_date"] is None
+    assert birth["property"] == "P569"
+    assert birth["precision"] == 6
+    assert birth["precision_kind"] == "millennium"
+    assert birth["calendar_model"].endswith("Q1985786")
+    assert birth["rank"] == "preferred"
+    assert birth["qualifiers"]["P1319"]["year"] == 350
+    assert birth["qualifiers"]["P1326"]["year"] == 550
+    assert wikipedia_api.classify_wikidata_life_date(birth) == "bounded_range"
+
+
+def test_life_date_evidence_preserves_bce_and_julian_without_inventing_exact_date():
+    claim = wikidata_time_claim("-0044-03-15T00:00:00Z")
+    claim["mainsnak"]["datavalue"]["value"].update({
+        "precision": 11,
+        "calendarmodel": "http://www.wikidata.org/entity/Q1985786",
+    })
+    evidence = wikipedia_api.get_life_date_evidence_from_wikidata({
+        "claims": {"P569": [claim]},
+    })
+    assert evidence["birth_year"] == -44
+    assert evidence["birth_date"] is None
+    assert evidence["birth_time"]["year"] == -44
+    assert evidence["birth_time"]["precision_kind"] == "day"
+    assert wikipedia_api.classify_wikidata_life_date(evidence["birth_time"]) == "day"
+
+
+def test_life_date_evidence_uses_the_same_preferred_claim_as_legacy_year_selection():
+    normal = wikidata_time_claim("+1900-00-00T00:00:00Z", "normal")
+    preferred = wikidata_time_claim("+0500-00-00T00:00:00Z", "preferred")
+    for claim, precision in ((normal, 9), (preferred, 6)):
+        claim["mainsnak"]["datavalue"]["value"].update({
+            "precision": precision,
+            "calendarmodel": "http://www.wikidata.org/entity/Q1985727",
+        })
+    evidence = wikipedia_api.get_life_date_evidence_from_wikidata({
+        "claims": {"P569": [normal, preferred]},
+    })
+    assert evidence["birth_year"] == 500
+    assert evidence["birth_time"]["rank"] == "preferred"
+    assert evidence["birth_time"]["precision_kind"] == "millennium"
+
+
+def test_life_date_evidence_distinguishes_absent_from_malformed_claims():
+    absent = wikipedia_api.get_life_date_evidence_from_wikidata({"claims": {}})
+    malformed = wikipedia_api.get_life_date_evidence_from_wikidata({
+        "claims": {"P569": [{"rank": "normal", "mainsnak": {}}]},
+    })
+    assert absent["birth_time"] is None
+    assert malformed["birth_time"] == {"status": "malformed", "property": "P569"}
+    assert wikipedia_api.classify_wikidata_life_date(malformed["birth_time"]) == "unknown"
+
+
+@pytest.mark.parametrize(
+    ("qualifiers", "expected"),
+    [({}, "century"), ({"P1319": []}, "century"), ({"P1326": []}, "century")],
+)
+def test_life_date_evidence_handles_absent_or_unusable_range_qualifiers(qualifiers, expected):
+    claim = wikidata_time_claim("+0500-00-00T00:00:00Z")
+    claim["mainsnak"]["datavalue"]["value"].update({
+        "precision": 7, "calendarmodel": "http://www.wikidata.org/entity/Q1985786",
+    })
+    claim["qualifiers"] = qualifiers
+    evidence = wikipedia_api.wikidata_time_claim_evidence("P569", claim)
+    assert wikipedia_api.classify_wikidata_life_date(evidence) == expected
+
+
+def test_life_date_evidence_preserves_circa_qualifier_as_approximate_year():
+    claim = wikidata_time_claim("+0500-00-00T00:00:00Z")
+    claim["mainsnak"]["datavalue"]["value"].update({
+        "precision": 9, "calendarmodel": "http://www.wikidata.org/entity/Q1985727",
+    })
+    claim["qualifiers"] = {
+        "P1480": [{"datavalue": {"value": {"id": "Q5727902"}}}],
+    }
+    evidence = wikipedia_api.wikidata_time_claim_evidence("P569", claim)
+    assert evidence["qualifier_entity_ids"] == {"P1480": "Q5727902"}
+    assert wikipedia_api.classify_wikidata_life_date(evidence) == "approximate_year"
+
 def test_get_wikidata_ids_batch_ignores_non_object_page_entries(monkeypatch):
     response = FakeResponse(
         payload={

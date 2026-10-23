@@ -642,8 +642,10 @@ def make_empty_database_entry(title: str) -> dict:
             "occupations": [],
             "birth_year": None,
             "birth_date": None,
+            "birth_time": None,
             "death_year": None,
             "death_date": None,
+            "death_time": None,
             "is_human": None,
             "is_philosopher": None,
             "fetched_at": None,
@@ -886,6 +888,84 @@ def validate_database_entry(entry: dict) -> List[str]:
                         field_name
                     )
                 )
+
+        # Life-time evidence was added after the original canonical schema.
+        # Omitted fields remain equivalent to null for historical records.
+        for field_name, property_id in (
+            ("birth_time", "P569"),
+            ("death_time", "P570"),
+        ):
+            if field_name not in wikidata:
+                continue
+            value = wikidata.get(field_name)
+            if value is None:
+                continue
+            if not isinstance(value, dict):
+                errors.append("wikidata.{} must be an object or null".format(field_name))
+                continue
+            if value.get("status") == "malformed":
+                if set(value) != {"status", "property"} or value.get("property") != property_id:
+                    errors.append("wikidata.{} malformed evidence is invalid".format(field_name))
+                continue
+            if value.get("status") != "available":
+                errors.append("wikidata.{}.status has invalid value".format(field_name))
+            if value.get("property") != property_id:
+                errors.append("wikidata.{}.property must be {}".format(field_name, property_id))
+            raw_time = value.get("raw_time")
+            match = raw_time if isinstance(raw_time, str) else None
+            time_match = re.fullmatch(r"[+-](\d+)-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", match or "")
+            if time_match is None:
+                errors.append("wikidata.{}.raw_time must be a Wikidata time".format(field_name))
+            precision = value.get("precision")
+            if not _is_int_not_bool(precision) or not 0 <= precision <= 14:
+                errors.append("wikidata.{}.precision must be an integer 0..14".format(field_name))
+            expected_kind = {
+                11: "day", 10: "month", 9: "year", 8: "decade",
+                7: "century", 6: "millennium",
+            }.get(precision, "broader_than_millennium" if _is_int_not_bool(precision) and precision < 6 else "unsupported")
+            if value.get("precision_kind") != expected_kind:
+                errors.append("wikidata.{}.precision_kind is inconsistent".format(field_name))
+            calendar_model = value.get("calendar_model")
+            if not isinstance(calendar_model, str) or not re.fullmatch(
+                r"https?://www\.wikidata\.org/entity/Q\d+", calendar_model
+            ):
+                errors.append("wikidata.{}.calendar_model must be a Wikidata calendar URI".format(field_name))
+            if value.get("rank") not in ("preferred", "normal", "deprecated"):
+                errors.append("wikidata.{}.rank has invalid value".format(field_name))
+            year = value.get("year")
+            if not _is_int_not_bool(year):
+                errors.append("wikidata.{}.year must be an integer".format(field_name))
+            elif time_match is not None:
+                parsed = int(time_match.group(1))
+                if raw_time.startswith("-"):
+                    parsed = -parsed
+                if year != parsed:
+                    errors.append("wikidata.{}.year must match raw_time".format(field_name))
+            qualifiers = value.get("qualifiers")
+            if qualifiers is not None:
+                if not isinstance(qualifiers, dict) or not set(qualifiers) <= {"P1319", "P1326"}:
+                    errors.append("wikidata.{}.qualifiers has invalid keys".format(field_name))
+                elif not all(
+                    isinstance(item, dict)
+                    and isinstance(item.get("raw_time"), str)
+                    and _is_int_not_bool(item.get("precision"))
+                    and isinstance(item.get("calendar_model"), str)
+                    and _is_int_not_bool(item.get("year"))
+                    and item.get("precision_kind") in {
+                        "day", "month", "year", "decade", "century",
+                        "millennium", "broader_than_millennium", "unsupported",
+                    }
+                    for item in qualifiers.values()
+                ):
+                    errors.append("wikidata.{}.qualifiers has invalid time evidence".format(field_name))
+            qualifier_entity_ids = value.get("qualifier_entity_ids")
+            if qualifier_entity_ids is not None and (
+                not isinstance(qualifier_entity_ids, dict)
+                or set(qualifier_entity_ids) != {"P1480"}
+                or not isinstance(qualifier_entity_ids.get("P1480"), str)
+                or not re.fullmatch(r"Q\d+", qualifier_entity_ids["P1480"])
+            ):
+                errors.append("wikidata.{}.qualifier_entity_ids is invalid".format(field_name))
 
         # Exact dates were added incrementally. Historical canonical entries
         # may omit either key, which is deliberately equivalent to null.

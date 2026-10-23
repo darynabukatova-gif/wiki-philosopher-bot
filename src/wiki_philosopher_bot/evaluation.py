@@ -17,7 +17,7 @@ from wiki_philosopher_bot.wikipedia_api import (
     get_occupations, 
     get_quotes, 
     get_summary, 
-    get_life_dates_from_wikidata,
+    get_life_date_evidence_from_wikidata,
     get_english_wikisource_sitelink,
 )
 
@@ -135,7 +135,7 @@ def prepare_entity(title, all_qids, all_entities, wikidata_errors=None):
     instances = get_instances(entity)
     occupations = get_occupations(entity)
 
-    birth, birth_date, death, death_date = get_life_dates_from_wikidata(entity)
+    life_dates = get_life_date_evidence_from_wikidata(entity)
     wikisource_url = get_english_wikisource_sitelink(entity)
 
     prepared = {
@@ -146,10 +146,12 @@ def prepare_entity(title, all_qids, all_entities, wikidata_errors=None):
         "instances": instances,
         "occupations": occupations,
 
-        "birth": birth,
-        "birth_date": birth_date,
-        "death": death,
-        "death_date": death_date,
+        "birth": life_dates["birth_year"],
+        "birth_date": life_dates["birth_date"],
+        "birth_time": life_dates["birth_time"],
+        "death": life_dates["death_year"],
+        "death_date": life_dates["death_date"],
+        "death_time": life_dates["death_time"],
         "wikisource_url": wikisource_url,
 
         # Absence of either QID is not contradictory evidence.  A title may
@@ -176,8 +178,10 @@ def canonical_wikidata_to_prepared(title, wikidata):
             "occupations": wikidata.get("occupations"),
             "birth": wikidata.get("birth_year"),
             "birth_date": wikidata.get("birth_date"),
+            "birth_time": wikidata.get("birth_time"),
             "death": wikidata.get("death_year"),
             "death_date": wikidata.get("death_date"),
+            "death_time": wikidata.get("death_time"),
             "is_human": wikidata.get("is_human"),
             "is_philosopher": wikidata.get("is_philosopher"),
         }
@@ -209,8 +213,10 @@ def prepared_entity_to_canonical_wikidata(prepared):
             "occupations": prepared.get("occupations"),
             "birth_year": prepared.get("birth"),
             "birth_date": prepared.get("birth_date"),
+            "birth_time": prepared.get("birth_time"),
             "death_year": prepared.get("death"),
             "death_date": prepared.get("death_date"),
+            "death_time": prepared.get("death_time"),
             "is_human": prepared.get("is_human"),
             "is_philosopher": prepared.get("is_philosopher"),
             "fetched_at": int(time.time()),
@@ -224,8 +230,10 @@ def prepared_entity_to_canonical_wikidata(prepared):
         "occupations": [],
         "birth_year": None,
         "birth_date": None,
+        "birth_time": None,
         "death_year": None,
         "death_date": None,
+        "death_time": None,
         "is_human": None,
         "is_philosopher": None,
         "fetched_at": None,
