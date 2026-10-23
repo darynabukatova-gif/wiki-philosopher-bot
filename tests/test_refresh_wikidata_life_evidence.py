@@ -120,6 +120,23 @@ def test_report_retains_side_statuses_and_accounting(monkeypatch):
     assert results["birth_time_proposals"] + results["death_time_proposals"] - results["both_proposed"] == 2
 
 
+def test_compatibility_summaries_are_derived_from_record_entries():
+    results = refresh._new_results()
+    results["record_entries"] = [
+        {"record_status": "update_birth_only", "birth": {"status": "proposed", "reason": "ok"}, "death": {"status": "property_absent", "reason": "absent"}},
+        {"record_status": "unchanged", "birth": {"status": "malformed_claim", "reason": "bad"}, "death": {"status": "ambiguous_claim", "reason": "ambiguous"}},
+        {"record_status": "unchanged", "birth": {"status": "operational_failure", "reason": "timeout"}, "death": {"status": "property_absent", "reason": "absent"}},
+    ]
+    refresh._derive_compatibility_summaries(results)
+    assert results["property_absent"] == {"birth": 0, "death": 2}
+    assert results["malformed_or_unsupported"] == 1
+    assert results["ambiguous_or_conflict"] == 1
+    assert results["operational_failures"] == 1
+    assert results["unchanged"] == 2
+    assert results["no_structured_evidence"] == 2
+    assert results["side_status_counts"]["birth"]["operational_failure"] == 1
+
+
 def test_run_refresh_dry_run_does_not_write_or_backup(tmp_path, monkeypatch):
     value = entry()
     (tmp_path / "database.jsonl").write_bytes(serialize_database_entries([value]))

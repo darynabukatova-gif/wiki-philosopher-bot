@@ -220,6 +220,48 @@ def _count_evidence(results, evidence, side):
         results["bce_evidence"][side] += 1
 
 
+def _derive_compatibility_summaries(results):
+    """Rebuild legacy summary views from v2 per-record audit entries.
+
+    ``no_structured_evidence`` historically means selected records for which
+    this missing-evidence operation has no proposal on either side.  That is
+    the same record set as the v2 ``unchanged`` outcome.
+    """
+    entries = results["record_entries"]
+    side_counts = {"birth": {}, "death": {}}
+    reason_counts = {"birth": {}, "death": {}}
+    for entry in entries:
+        for side in ("birth", "death"):
+            status = entry[side]["status"]
+            reason = entry[side]["reason"]
+            side_counts[side][status] = side_counts[side].get(status, 0) + 1
+            reason_counts[side][reason] = reason_counts[side].get(reason, 0) + 1
+    results["side_status_counts"] = side_counts
+    results["reason_counts"] = reason_counts
+    results["property_absent"] = {
+        side: side_counts[side].get("property_absent", 0)
+        for side in ("birth", "death")
+    }
+    results["malformed_or_unsupported"] = sum(
+        side_counts[side].get(status, 0)
+        for side in ("birth", "death")
+        for status in ("malformed_claim", "unsupported_claim")
+    )
+    results["ambiguous_or_conflict"] = sum(
+        side_counts[side].get("ambiguous_claim", 0)
+        for side in ("birth", "death")
+    )
+    results["operational_failures"] = sum(
+        side_counts[side].get("operational_failure", 0)
+        for side in ("birth", "death")
+    )
+    results["unchanged"] = sum(
+        entry.get("record_status") == "unchanged" for entry in entries
+    )
+    results["no_structured_evidence"] = results["unchanged"]
+    results["records_with_any_proposal"] = len(entries) - results["unchanged"]
+
+
 def collect_proposals(database, titles, *, limiter=None):
     if limiter is None:
         limiter = RateLimiter(MAINTENANCE_RATE_PER_SECOND)
@@ -319,12 +361,7 @@ def collect_proposals(database, titles, *, limiter=None):
     results["death_time_proposals"] = sum("death_time" in p for p in proposals.values())
     results["both_proposed"] = sum({"birth_time", "death_time"} <= set(p) for p in proposals.values())
     results["record_entries"].sort(key=lambda x: (x["title"], x["qid"]))
-    results["records_with_any_proposal"] = sum(e["would_update"] for e in results["record_entries"])
-    results["unchanged"] = sum(not e["would_update"] for e in results["record_entries"])
-    results["malformed_or_unsupported"] = sum(
-        e[side]["status"] in {"malformed_claim", "unsupported_claim"}
-        for e in results["record_entries"] for side in ("birth", "death")
-    )
+    _derive_compatibility_summaries(results)
     return proposals, results
 
 
@@ -448,16 +485,10 @@ def recover_report(database, data_folder, report_dir, source_path):
     # Reuse a fresh aggregate pass by temporarily feeding merged entries through
     # the same stable report fields; preserve all source observations.
     results = _new_results(); results["checked"] = len(entries); results["record_entries"] = entries
-    for e in entries:
-        for side in ("birth", "death"):
-            st=e[side]["status"]; results["side_status_counts"][side][st]=results["side_status_counts"][side].get(st,0)+1
-            results["reason_counts"][side][e[side]["reason"]]=results["reason_counts"][side].get(e[side]["reason"],0)+1
     results["birth_time_proposals"] = sum(e["birth"]["status"]=="proposed" for e in entries)
     results["death_time_proposals"] = sum(e["death"]["status"]=="proposed" for e in entries)
     results["both_proposed"] = sum(e["birth"]["status"]==e["death"]["status"]=="proposed" for e in entries)
-    results["records_with_any_proposal"] = sum(e.get("would_update") for e in entries); results["unchanged"] = len(entries)-results["records_with_any_proposal"]
-    results["operational_failures"] = sum(e[s]["status"]=="operational_failure" for e in entries for s in ("birth","death"))
-    results["malformed_or_unsupported"] = sum(e[s]["status"] in {"malformed_claim","unsupported_claim"} for e in entries for s in ("birth","death"))
+    _derive_compatibility_summaries(results)
     started=time.time(); report={"report_schema_version":2,"operation":"wikidata-life-evidence-refresh","mode":"dry-run","completed":True,"recovery_run":True,"source_report":str(source_path),"root_report":source.get("root_report",str(source_path)),"generated_at":time.strftime("%Y-%m-%dT%H:%M:%SZ",time.gmtime()),"database_sha256_before":before,"database_sha256_after":before,"selected_record_count":len(entries),"checked_record_count":len(entries),"record_entries":entries,"results":results,"proposed_records":proposals,"backup":DatabaseBackupResult().as_report(False, OPERATIONAL_BACKUP_RETENTION_DAYS),"duration_seconds":round(time.time()-started,6)}
     paths=save_json_report(report, report_dir, started, report_kind="wikidata-life-evidence", temporary_prefix=".wikidata-life-evidence-report-")
     return report, paths[0] if isinstance(paths,tuple) else paths

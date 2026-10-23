@@ -3,7 +3,8 @@ import random
 import copy
 import math
 import re
-from datetime import date
+from datetime import date, datetime, timezone
+from email.utils import parsedate_to_datetime
 import requests
 import threading
 from typing import Optional
@@ -1455,7 +1456,17 @@ def safe_request(
                     attempts=attempt,
                 )
 
-            wait = calculate_backoff(attempt) + jitter(0, 0.5)
+            retry_after = None
+            if response.status_code == 429:
+                raw_retry = response.headers.get("Retry-After") if response.headers else None
+                try:
+                    retry_after = max(0.0, float(raw_retry))
+                except (TypeError, ValueError):
+                    try:
+                        retry_after = max(0.0, (parsedate_to_datetime(raw_retry) - datetime.now(timezone.utc)).total_seconds())
+                    except (TypeError, ValueError, AttributeError):
+                        retry_after = None
+            wait = retry_after if retry_after is not None else calculate_backoff(attempt) + jitter(0, 0.5)
             print("{} → retry in {:.2f}s".format(response.status_code, wait))
             sleep(wait)
 
@@ -1693,7 +1704,7 @@ def get_wikidata_ids_batch(titles, limiter=None):
         None,
     )
 
-def get_wikidata_entities_batch(qids, limiter=None):
+def get_wikidata_entities_batch(qids, limiter=None, *, timeout=None, max_retries=None):
     """Fetch entity claims and the one sitelink family used for reading links."""
     params = {
         "action": "wbgetentities",
@@ -1706,6 +1717,8 @@ def get_wikidata_entities_batch(qids, limiter=None):
         WIKIDATA_URL,
         params,
         limiter=limiter,
+        **({"timeout": timeout} if timeout is not None else {}),
+        **({"max_retries": max_retries} if max_retries is not None else {}),
     )
 
     if not request_result.ok:
